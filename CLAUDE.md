@@ -14,7 +14,7 @@ ESP32-S3 SBB (Swiss Federal Railways) Departure Monitor. The device:
 
 ## Build / flash / monitor
 
-Standard ESP-IDF v5.x project. Target is `esp32s3`.
+Standard ESP-IDF v6.x project (also builds on v5.3+, where `driver` was split into the `esp_driver_*` components). Target is `esp32s3`.
 
 ```
 # one-time: create WiFi credentials (gitignored)

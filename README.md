@@ -121,7 +121,7 @@ main/
 
 ## Build-System
 
-Standard ESP-IDF v5.x Projekt. Ziel: `esp32s3`.
+Standard ESP-IDF v6.x Projekt (baut auch ab v5.3, seit der Aufteilung von `driver` in `esp_driver_*`). Ziel: `esp32s3`.
 
 Partition Table (`partitions.csv`):
 
