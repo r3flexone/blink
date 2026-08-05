@@ -52,7 +52,9 @@ All tunables live in `blink_config_t` (`nvs_config.h`). They are:
 - Persisted to NVS on save; survive deep sleep and reboots.
 - `secrets.h` (`WIFI_SSID` / `WIFI_PASS`) is a compile-time fallback if NVS has no credentials.
 
-When adding a new tunable: add the field to `blink_config_t`, set a default in `nvs_config_defaults()`, add NVS load/save with a key ≤ 15 chars, and add the field to `handler_config_get()` and `handler_config_post()` in `http_server.c`.
+When adding a new tunable: add the field to `blink_config_t`, set a default in `nvs_config_defaults()`, add a range check to `nvs_config_sanitize()`, add NVS load/save with a key ≤ 15 chars, and add the field to `handler_config_get()` and `handler_config_post()` in `http_server.c`.
+
+`nvs_config_sanitize()` clamps every field to a plausible range. It runs at the end of `nvs_config_load()` and again in `handler_config_post()` before the save, so neither a stale NVS entry nor a hand-crafted `POST /api/config` can store a value that bricks the device (e.g. `apiRetryCount = 0` → the retry loop never runs, `refresh*Sec = 0` → the API is hammered without pause).
 
 ### Wake-up and sleep flow (`app_main` in `main.c`)
 
@@ -61,7 +63,7 @@ When adding a new tunable: add the field to `blink_config_t`, set a default in `
 3. `time()` + `localtime_r()` — the ESP32 RTC keeps time across deep sleep, so NTP is only re-run if `tm_year < 100` (no valid time yet).
 4. Compute `in_window = time_valid && !weekend_skip && inside_active_time`.
 5. **If not in window and not woken by button and `sleepEnabled = true` → sleep.** If `weekendSleepEnabled` and inside the weekend window: sleep directly until `weekendEnd`. Otherwise: sleep until next window start, capped at `sleepMaxMin`. If no valid time: sleep `sleepFallbackS` seconds.
-6. **If `sleepEnabled = false` and not in window and not woken by button:** set `run_forever = true` — the active loop runs indefinitely. The OLED countdown bar stays full. When sleep is re-enabled via the web panel, a fresh `buttonActiveMin`-timer starts from the save moment.
+6. **If `sleepEnabled = false` and not woken by button:** set `run_forever = true` — the active loop runs indefinitely, in and outside a time window alike. The OLED countdown bar stays full. When sleep is re-enabled via the web panel, a fresh `buttonActiveMin`-timer starts from the save moment. A button wake always keeps its timer, so the button still ends in deep sleep.
 7. Otherwise run the active loop until `active_end` (end of time window, or button active duration).
 8. Button pressed during active loop → `force_sleep = true`, exits immediately.
 9. After the loop, `go_to_sleep(sleepAfterS)` (default 300 s = 5 min).
@@ -76,7 +78,9 @@ When adding a new tunable: add the field to `blink_config_t`, set a default in `
 5. Render via `display_departures()` which in turn calls `draw_header()` (station name + clock).
 6. Draw countdown bar — full (100 %) when `run_forever`, counting down otherwise.
 7. Compute minutes to next non-cancelled future train → tiered `refresh_sec`.
-8. Inner wait loop handles: LED blink in error state, OLED invert for burn-in protection, re-render every 30 s, button-press → `force_sleep`, `g_cfg_dirty` → break to outer loop immediately.
+8. Inner wait loop handles: LED blink in error state, OLED invert for burn-in protection, re-render every 30 s (the same screen the outer loop chose — never stale data without the `!` marker), debounced button-press → `force_sleep`, `g_cfg_dirty` → break to outer loop immediately.
+
+Durations are converted with `minutes_to_ticks()` / `seconds_to_ticks()`, not `pdMS_TO_TICKS()` — the latter overflows its 32-bit intermediate above ~11.9 h, which silently turned a 23 h time window into a 7-minute one.
 
 ### Stack and memory gotchas
 

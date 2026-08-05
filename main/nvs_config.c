@@ -3,6 +3,7 @@
 #include "nvs.h"
 #include "esp_log.h"
 #include <string.h>
+#include <stdio.h>
 
 static const char *TAG = "nvs_config";
 #define NVS_NS "blink_cfg"
@@ -78,6 +79,70 @@ void nvs_config_defaults(blink_config_t *cfg) {
 
     // Verhalten
     cfg->weekdaysOnly       = true;
+}
+
+// ===== SANITIZE =====
+static int clampi(int v, int lo, int hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+void nvs_config_sanitize(blink_config_t *cfg) {
+    cfg->timeWindowCount = clampi(cfg->timeWindowCount, 1, 8);
+    for (int i = 0; i < 8; i++) {
+        cfg->timeWindows[i].startH = clampi(cfg->timeWindows[i].startH, 0, 23);
+        cfg->timeWindows[i].startM = clampi(cfg->timeWindows[i].startM, 0, 59);
+        cfg->timeWindows[i].endH   = clampi(cfg->timeWindows[i].endH,   0, 23);
+        cfg->timeWindows[i].endM   = clampi(cfg->timeWindows[i].endM,   0, 59);
+    }
+
+    cfg->buttonActiveMin     = clampi(cfg->buttonActiveMin,     1, 1440);
+    cfg->buttonLongPressMs   = clampi(cfg->buttonLongPressMs, 100, 30000);
+    cfg->buttonLongActiveMin = clampi(cfg->buttonLongActiveMin, 1, 1440);
+    cfg->buttonGpio          = clampi(cfg->buttonGpio,          0, 21);
+
+    cfg->ntpTimeoutS         = clampi(cfg->ntpTimeoutS,         1, 60);
+    cfg->destFilterCount     = clampi(cfg->destFilterCount,     0, 4);
+
+    // sleepAfterS = 0 würde sofort wieder aufwecken (Button-Schlaf wirkungslos)
+    cfg->sleepFallbackS      = clampi(cfg->sleepFallbackS,     10, 86400);
+    cfg->sleepAfterS         = clampi(cfg->sleepAfterS,         5, 86400);
+    cfg->sleepMaxMin         = clampi(cfg->sleepMaxMin,         1, 1440);
+    cfg->weekendStartDay     = clampi(cfg->weekendStartDay,     0, 6);
+    cfg->weekendStartH       = clampi(cfg->weekendStartH,       0, 23);
+    cfg->weekendStartM       = clampi(cfg->weekendStartM,       0, 59);
+    cfg->weekendEndDay       = clampi(cfg->weekendEndDay,       0, 6);
+    cfg->weekendEndH         = clampi(cfg->weekendEndH,         0, 23);
+    cfg->weekendEndM         = clampi(cfg->weekendEndM,         0, 59);
+
+    cfg->ledGpio             = clampi(cfg->ledGpio,             0, 48);
+    cfg->sdaGpio             = clampi(cfg->sdaGpio,             0, 48);
+    cfg->sclGpio             = clampi(cfg->sclGpio,             0, 48);
+    cfg->oledInvertMin       = clampi(cfg->oledInvertMin,       0, 1440);
+    cfg->ledErrorBlinkMs     = clampi(cfg->ledErrorBlinkMs,     0, 60000);
+
+    cfg->delaySmallMin       = clampi(cfg->delaySmallMin,       1, 240);
+    cfg->delayBigMin         = clampi(cfg->delayBigMin,         1, 240);
+    if (cfg->delayBigMin <= cfg->delaySmallMin)
+        cfg->delayBigMin = clampi(cfg->delaySmallMin + 1, 1, 240);
+
+    // Untergrenze 10 s: 0 würde die Warteschleife zur Dauerabfrage machen
+    cfg->refreshNearSec      = clampi(cfg->refreshNearSec,     10, 3600);
+    cfg->refreshMidSec       = clampi(cfg->refreshMidSec,      10, 3600);
+    cfg->refreshFarSec       = clampi(cfg->refreshFarSec,      10, 3600);
+    cfg->refreshVeryfarSec   = clampi(cfg->refreshVeryfarSec,  10, 3600);
+    cfg->refreshNearMin      = clampi(cfg->refreshNearMin,      1, 1440);
+    cfg->refreshMidMin       = clampi(cfg->refreshMidMin,       1, 1440);
+    cfg->refreshFarMin       = clampi(cfg->refreshFarMin,       1, 1440);
+
+    // apiRetryCount 0 = die Retry-Schleife läuft nie → nie eine Abfrage
+    cfg->apiRetryCount       = clampi(cfg->apiRetryCount,       1, 10);
+    cfg->apiRetryDelayS      = clampi(cfg->apiRetryDelayS,      1, 300);
+    cfg->staleMaxMin         = clampi(cfg->staleMaxMin,         1, 1440);
+
+    if (!cfg->station[0])
+        snprintf(cfg->station, sizeof(cfg->station), "Gelterkinden");
+    if (!cfg->oledAddr[0])
+        snprintf(cfg->oledAddr, sizeof(cfg->oledAddr), "0x3C");
 }
 
 // ===== LOAD =====
@@ -187,6 +252,7 @@ esp_err_t nvs_config_load(blink_config_t *cfg) {
     LB("wdOnly",        weekdaysOnly)
 
     nvs_close(h);
+    nvs_config_sanitize(cfg);
     ESP_LOGI(TAG, "Config geladen: %d Zeitfenster, Station=%s",
              cfg->timeWindowCount, cfg->station);
     return ESP_OK;

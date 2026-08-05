@@ -10,6 +10,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <time.h>   // time(), localtime_r() — bisher nur transitiv mitgekommen
 
 static const char *TAG = "sbb";
 
@@ -26,6 +27,7 @@ static bool wifi_initialised = false;
 static bool wifi_ap_mode = false;
 static char *http_buf = NULL;
 static int  http_buf_len = 0;
+static bool http_truncated = false;
 
 static void sbb_start_ap(void)
 {
@@ -116,6 +118,9 @@ bool sbb_wifi_reconnect(void)
 {
     if (wifi_ready) return true;
     if (!wifi_initialised) return false;
+    // Im AP-Modus gibt es kein STA-Interface — esp_wifi_connect() würde nur
+    // Fehler loggen und den Aufrufer 15 s blockieren.
+    if (wifi_ap_mode) return false;
     ESP_LOGI(TAG, "WiFi Reconnect...");
     retry_count = 0;
     xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
@@ -130,13 +135,30 @@ bool sbb_wifi_reconnect(void)
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
-    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+    switch (evt->event_id) {
+    case HTTP_EVENT_ON_CONNECTED:
+        // Redirect oder interner Retry innerhalb eines perform(): Puffer
+        // zurücksetzen, sonst werden zwei Antworten aneinandergehängt.
+        http_buf_len = 0;
+        http_truncated = false;
+        if (http_buf) http_buf[0] = 0;
+        break;
+    case HTTP_EVENT_ON_DATA: {
+        if (!http_buf) break;
         int copy = evt->data_len;
-        if (http_buf_len + copy >= HTTP_BUF_SIZE - 1)
+        if (http_buf_len + copy > HTTP_BUF_SIZE - 1) {
             copy = HTTP_BUF_SIZE - 1 - http_buf_len;
-        memcpy(http_buf + http_buf_len, evt->data, copy);
-        http_buf_len += copy;
-        http_buf[http_buf_len] = 0;
+            http_truncated = true;   // sonst scheitert später nur der JSON-Parser
+        }
+        if (copy > 0) {
+            memcpy(http_buf + http_buf_len, evt->data, copy);
+            http_buf_len += copy;
+            http_buf[http_buf_len] = 0;
+        }
+        break;
+    }
+    default:
+        break;
     }
     return ESP_OK;
 }
@@ -205,6 +227,7 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
 
     memset(results, 0, sizeof(SbbDeparture) * DEP_COUNT);
     http_buf_len = 0;
+    http_truncated = false;
     http_buf[0] = 0;
 
     // Station vollständig URL-encodieren: nur unreserved (A-Z a-z 0-9 - _ . ~)
@@ -253,18 +276,35 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) { ESP_LOGE(TAG, "HTTP init fehlgeschlagen"); return false; }
     esp_err_t err = esp_http_client_perform(client);
-
+    // Status vor dem cleanup lesen — danach ist das Handle ungültig.
+    int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
     esp_http_client_cleanup(client);
-    ESP_LOGI(TAG, "HTTP Response (%d bytes)", http_buf_len);
+    ESP_LOGI(TAG, "HTTP %d (%d bytes)", status, http_buf_len);
 
     if (err != ESP_OK) { ESP_LOGE(TAG, "HTTP: %s", esp_err_to_name(err)); return false; }
+    // perform() liefert auch bei 404/500 ESP_OK — der Body ist dann ein
+    // Fehler-JSON ohne stationboard, was sonst als "JSON Fehler" erschiene.
+    if (status < 200 || status >= 300) {
+        ESP_LOGE(TAG, "API antwortet mit HTTP %d (Station '%s' falsch geschrieben?)",
+                 status, station);
+        return false;
+    }
+    if (http_truncated) {
+        ESP_LOGE(TAG, "Antwort > %d KB, abgeschnitten — Filter reduzieren",
+                 HTTP_BUF_SIZE / 1024);
+        return false;
+    }
     if (http_buf_len == 0) { ESP_LOGE(TAG, "Leere Antwort!"); return false; }
 
     cJSON *root = cJSON_Parse(http_buf);
     if (!root) { ESP_LOGE(TAG, "JSON Parse Fehler"); return false; }
 
     cJSON *stationboard = cJSON_GetObjectItem(root, "stationboard");
-    if (!stationboard) { cJSON_Delete(root); return false; }
+    if (!cJSON_IsArray(stationboard)) {
+        ESP_LOGE(TAG, "Kein stationboard-Array in der Antwort");
+        cJSON_Delete(root);
+        return false;
+    }
 
     time_t now; struct tm timeinfo;
     time(&now); localtime_r(&now, &timeinfo);
@@ -301,10 +341,12 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         cJSON *platform = cJSON_GetObjectItem(stop, "platform");
 
         // Filter prüfen: Endziel ODER Zwischenstation muss matchen
+        // Leere Filter-Strings werden übersprungen — str_contains_ci() würde
+        // sie sonst auf jeden Zug matchen und der Filter wäre wirkungslos.
         bool matches = (filter_count == 0);
         if (!matches && dest && dest->valuestring) {
             for (int f = 0; f < filter_count; f++) {
-                if (dest_filters[f] &&
+                if (dest_filters[f] && dest_filters[f][0] &&
                     str_contains_ci(dest->valuestring, dest_filters[f])) {
                     matches = true; break;
                 }
@@ -322,7 +364,7 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
                     cJSON *pn = cJSON_GetObjectItem(ps, "name");
                     if (!pn || !pn->valuestring) continue;
                     for (int f = 0; f < filter_count; f++) {
-                        if (dest_filters[f] &&
+                        if (dest_filters[f] && dest_filters[f][0] &&
                             str_contains_ci(pn->valuestring, dest_filters[f])) {
                             matches = true; break;
                         }
@@ -335,7 +377,8 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         entries[n].cancelled = cancelled && cJSON_IsTrue(cancelled);
         entries[n].minutes = time_to_minutes(departure->valuestring);
         format_time(departure->valuestring, entries[n].time);
-        entries[n].delay = delay_json ? delay_json->valueint : 0;
+        // delay ist bei fehlenden Echtzeitdaten null — nur echte Zahlen nehmen
+        entries[n].delay = cJSON_IsNumber(delay_json) ? delay_json->valueint : 0;
 
         if (dest && dest->valuestring) {
             strncpy(entries[n].destination, dest->valuestring, 31);

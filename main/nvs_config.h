@@ -97,8 +97,17 @@ void nvs_config_defaults(blink_config_t *cfg);
 
 /**
  * Lädt Konfiguration aus NVS (füllt fehlende Werte mit Defaults).
+ * Ruft am Ende nvs_config_sanitize().
  */
 esp_err_t nvs_config_load(blink_config_t *cfg);
+
+/**
+ * Begrenzt alle Felder auf plausible Bereiche. Schützt gegen Werte aus
+ * einer älteren Firmware, einem manipulierten API-Aufruf oder korruptem NVS,
+ * die das Gerät sonst unbenutzbar machen (z.B. apiRetryCount = 0 → nie eine
+ * Abfrage, refresh*Sec = 0 → Dauerabfrage).
+ */
+void nvs_config_sanitize(blink_config_t *cfg);
 
 /**
  * Speichert vollständige Konfiguration in NVS.

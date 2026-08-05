@@ -35,6 +35,20 @@ time_t g_last_deps_time = 0;
 #define OLED_WIDTH  128
 #define OLED_HEIGHT  64
 
+// pdMS_TO_TICKS() rechnet intern in 32 Bit (ms * configTICK_RATE_HZ) und
+// läuft ab ca. 11.9 h über — ein Zeitfenster von 23 h oder ein OLED-Invert-
+// Intervall von 1440 min ergäbe sonst eine viel zu kurze Dauer. Deshalb
+// Minuten/Sekunden direkt in Ticks umrechnen.
+#define MAX_DURATION_MIN (7 * 24 * 60)
+static TickType_t minutes_to_ticks(uint32_t minutes) {
+    if (minutes > MAX_DURATION_MIN) minutes = MAX_DURATION_MIN;
+    return (TickType_t)minutes * 60 * configTICK_RATE_HZ;
+}
+static TickType_t seconds_to_ticks(uint32_t seconds) {
+    if (seconds > MAX_DURATION_MIN * 60) seconds = MAX_DURATION_MIN * 60;
+    return (TickType_t)seconds * configTICK_RATE_HZ;
+}
+
 // ===== NEOPIXEL =====
 static led_strip_handle_t led_strip;
 static bool led_ok = false;
@@ -98,8 +112,13 @@ static void oled_flush(void) {
     }
 }
 static void oled_init_display(void) {
+    // Tippfehler im Panel ("3G", "abc") darf nicht in einer unbrauchbaren
+    // I2C-Adresse enden — ausserhalb des gültigen 7-Bit-Bereichs: Default.
     int oled_addr = (int)strtol(cfg.oledAddr, NULL, 16);
-    if (oled_addr == 0) oled_addr = 0x3C;
+    if (oled_addr < 0x08 || oled_addr > 0x77) {
+        ESP_LOGW(TAG, "OLED-Adresse '%s' ungueltig, nutze 0x3C", cfg.oledAddr);
+        oled_addr = 0x3C;
+    }
     i2c_master_bus_config_t bc = {
         .clk_source = I2C_CLK_SRC_DEFAULT, .i2c_port = I2C_NUM_0,
         .scl_io_num = cfg.sclGpio, .sda_io_num = cfg.sdaGpio,
@@ -111,7 +130,11 @@ static void oled_init_display(void) {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = (uint16_t)oled_addr, .scl_speed_hz = 100000,
     };
-    if (i2c_master_bus_add_device(bus, &dc, &oled_dev) != ESP_OK) return;
+    if (i2c_master_bus_add_device(bus, &dc, &oled_dev) != ESP_OK) {
+        oled_dev = NULL;
+        i2c_del_master_bus(bus);   // sonst bleibt der I2C-Port belegt
+        return;
+    }
     oled_cmd(0xAE); oled_cmd(0xD5); oled_cmd(0x80);
     oled_cmd(0xA8); oled_cmd(0x3F); oled_cmd(0xD3); oled_cmd(0x00);
     oled_cmd(0x40); oled_cmd(0x8D); oled_cmd(0x14);
@@ -190,6 +213,10 @@ static int draw_char_utf8(int x, int y, const unsigned char *s, int *consumed) {
         }
         *consumed = 1;
     }
+    // Folgebytes einer nicht unterstützten UTF-8-Sequenz (z.B. 3-Byte-Zeichen)
+    // überspringen, ohne zu zeichnen — sonst frisst ein einzelnes Zeichen
+    // mehrere Leerstellen auf der Zeile.
+    if (c >= 0x80 && c <= 0xBF) return x;
     char ch = (char)c;
     if (ch >= 'a' && ch <= 'z') ch -= 32;
     if (ch >= 32 && ch <= 90) { draw_glyph(x,y,font5x7[ch-32]); return x+6; }
@@ -259,6 +286,30 @@ static void display_departures(SbbDeparture deps[4], bool stale) {
         }
     }
     oled_flush();
+}
+
+static void display_error(void) {
+    draw_header(cfg.station, false);
+    draw_text(0, 20, "API FEHLER");
+    draw_text(0, 32, "PRUEFE NETZ...");
+    oled_flush();
+}
+
+// ===== BUTTON =====
+// Entprellt: ein einzelner Störimpuls auf GPIO 0 soll das Gerät nicht schlafen legen.
+static bool button_pressed(void) {
+    if (gpio_get_level(cfg.buttonGpio) != 0) return false;
+    vTaskDelay(pdMS_TO_TICKS(30));
+    return gpio_get_level(cfg.buttonGpio) == 0;
+}
+
+// Wartet (begrenzt) bis der Taster losgelassen ist.
+static void wait_button_release(int timeout_ms) {
+    int waited = 0;
+    while (gpio_get_level(cfg.buttonGpio) == 0 && waited < timeout_ms) {
+        vTaskDelay(pdMS_TO_TICKS(20));
+        waited += 20;
+    }
 }
 
 // ===== COUNTDOWN BAR =====
@@ -448,6 +499,10 @@ void app_main(void) {
             button_active_min = cfg.buttonLongActiveMin;
         }
         ESP_LOGI(TAG, "Button %d ms -> %d Min aktiv", hold_ms, button_active_min);
+        // Die Messschleife bricht nach buttonLongPressMs + 1 s ab. Wird der
+        // Taster länger gehalten, sähe die Aktiv-Schleife ihn sofort als
+        // "Sleep"-Druck und das Gerät schliefe direkt wieder ein.
+        wait_button_release(10000);
     }
 
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
@@ -456,6 +511,8 @@ void app_main(void) {
     time(&now); localtime_r(&now, &ti);
     bool time_valid = (ti.tm_year >= 100);
     bool ap_mode = false;
+    bool wifi_started = false;
+    bool ntp_tried = false;
 
     if (!time_valid) {
         if (oled_ok) {
@@ -466,9 +523,11 @@ void app_main(void) {
         }
         led_set(cfg.ledLoadingRgb[0], cfg.ledLoadingRgb[1], cfg.ledLoadingRgb[2]);
         wifi_connect_from_cfg();
+        wifi_started = true;
         ap_mode = sbb_wifi_is_ap_mode();
         if (!ap_mode) {
             time_valid = ntp_sync();
+            ntp_tried = true;
             time(&now); localtime_r(&now, &ti);
         }
     }
@@ -500,6 +559,7 @@ void app_main(void) {
     }
 
     if (!in_window && !woken_by_button && cfg.sleepEnabled && !ap_mode) {
+        uint64_t sleep_us;
         int d;
         if (time_valid) {
             d = 24 * 60;
@@ -521,12 +581,17 @@ void app_main(void) {
                 if (weekend_skip) ESP_LOGI(TAG, "Wochenende, schlafe %d Min", d);
                 else              ESP_LOGI(TAG, "Schlafe %d Min", d);
             }
-        } else {
-            d = cfg.sleepFallbackS / 60;
+            // d == 0 (genau auf der Fenstergrenze) hiesse "sofort aufwachen"
             if (d < 1) d = 1;
+            sleep_us = (uint64_t)d * 60ULL * 1000000ULL;
+        } else {
+            // Ohne gültige Zeit exakt sleepFallbackS schlafen — die frühere
+            // Umrechnung auf volle Minuten machte aus 90 s stille 60 s.
+            sleep_us = (uint64_t)cfg.sleepFallbackS * 1000000ULL;
+            d = (cfg.sleepFallbackS + 59) / 60;
         }
         show_sleep_info(d);
-        go_to_sleep((uint64_t)d * 60ULL * 1000000ULL);
+        go_to_sleep(sleep_us);
         return;
     }
 
@@ -541,14 +606,20 @@ void app_main(void) {
     }
     led_set(cfg.ledLoadingRgb[0], cfg.ledLoadingRgb[1], cfg.ledLoadingRgb[2]);
 
-    if (wakeup != 0) {
+    // WiFi in jedem Fall aufbauen, wenn es die Kaltstart-Phase nicht schon tat.
+    // Früher hing das an "wakeup != 0": nach einem esp_restart (Panel-Neustart)
+    // ist die Wake-Cause aber UNDEFINED, während die RTC-Zeit gültig bleibt —
+    // das Gerät lief dann ohne Netz weiter und zeigte dauerhaft "API FEHLER".
+    if (!wifi_started) {
         wifi_connect_from_cfg();
+        wifi_started = true;
         ap_mode = sbb_wifi_is_ap_mode();
-        if (!ap_mode) {
-            ntp_sync();
-            time(&now); localtime_r(&now, &ti);
-            cur_min = ti.tm_hour*60 + ti.tm_min;
-        }
+    }
+    if (!ap_mode && !ntp_tried) {
+        // Stösst SNTP erneut an und korrigiert so die RTC-Drift über lange
+        // Schlafphasen hinweg (kehrt sofort zurück, wenn die Zeit schon passt).
+        ntp_sync();
+        ntp_tried = true;
     }
 
     // mDNS + HTTP-Server (WiFi/netif bereits durch sbb_wifi_init aktiv)
@@ -571,7 +642,7 @@ void app_main(void) {
         while (!g_cfg_dirty) {
             // Button im AP-Modus: sleepFallbackS schlafen statt fixer 30 s —
             // ein kurzer Zyklus würde sonst nur AP→Sleep→AP im Minutentakt kosten.
-            if (gpio_get_level(cfg.buttonGpio) == 0)
+            if (button_pressed())
                 go_to_sleep((uint64_t)cfg.sleepFallbackS * 1000000ULL);
             vTaskDelay(pdMS_TO_TICKS(200));
         }
@@ -584,11 +655,11 @@ void app_main(void) {
     TickType_t active_start = xTaskGetTickCount();
     TickType_t active_end;
     if (woken_by_button) {
-        active_end = active_start + pdMS_TO_TICKS((uint32_t)button_active_min * 60 * 1000);
+        active_end = active_start + minutes_to_ticks((uint32_t)button_active_min);
     } else {
         int rem = active_rem_min;
         if (rem < 1) rem = 1;
-        active_end = active_start + pdMS_TO_TICKS((uint32_t)rem * 60 * 1000);
+        active_end = active_start + minutes_to_ticks((uint32_t)rem);
     }
 
     // Dest-Filter: Pointer-Array aus cfg.destFilters[][] bauen
@@ -606,10 +677,12 @@ void app_main(void) {
 
     bool inverted = false;
     bool force_sleep = false;
-    // sleepEnabled=false: Schleife läuft unbegrenzt (bis Button-Sleep oder Sleep wird aktiviert)
-    bool run_forever = !cfg.sleepEnabled && !in_window && !woken_by_button;
+    // sleepEnabled=false: Schleife läuft unbegrenzt (bis Button-Sleep oder Sleep wird aktiviert).
+    // Gilt auch im Zeitfenster — sonst wäre das Gerät bei "Schlaf aus" nach dem
+    // Fensterende trotzdem für sleepAfterS eingeschlafen.
+    bool run_forever = !cfg.sleepEnabled && !woken_by_button;
     TickType_t next_invert = xTaskGetTickCount() +
-        pdMS_TO_TICKS((uint32_t)(cfg.oledInvertMin > 0 ? cfg.oledInvertMin : 1440) * 60 * 1000);
+        minutes_to_ticks((uint32_t)(cfg.oledInvertMin > 0 ? cfg.oledInvertMin : 1440));
 
     while (!force_sleep && (run_forever || xTaskGetTickCount() < active_end)) {
         if (g_cfg_dirty) {
@@ -621,13 +694,21 @@ void app_main(void) {
             } else {
                 ESP_LOGI(TAG, "Config neu geladen (Web-Panel)");
             }
-            run_forever = !cfg.sleepEnabled && !in_window && !woken_by_button;
+            run_forever = !cfg.sleepEnabled && !woken_by_button;
             if (was_forever && !run_forever) {
                 // Sleep wurde aktiviert → frischen buttonActiveMin-Timer starten
                 active_start = xTaskGetTickCount();
-                active_end   = active_start + pdMS_TO_TICKS((uint32_t)cfg.buttonActiveMin * 60 * 1000);
+                active_end   = active_start + minutes_to_ticks((uint32_t)cfg.buttonActiveMin);
                 ESP_LOGI(TAG, "Sleep aktiviert → Timer %d Min", cfg.buttonActiveMin);
             }
+            // Invert-Intervall neu ansetzen; bei 0 (aus) sofort zurückschalten,
+            // sonst bliebe das Display bis zum Schlafen invertiert.
+            if (cfg.oledInvertMin <= 0 && inverted) {
+                oled_cmd(0xA6);
+                inverted = false;
+            }
+            next_invert = xTaskGetTickCount() +
+                minutes_to_ticks((uint32_t)(cfg.oledInvertMin > 0 ? cfg.oledInvertMin : 1440));
             for (int i = 0; i < 4; i++)
                 filter_ptrs[i] = (i < cfg.destFilterCount) ? cfg.destFilters[i] : NULL;
         }
@@ -637,7 +718,7 @@ void app_main(void) {
         for (int attempt = 0; attempt < cfg.apiRetryCount && !success; attempt++) {
             if (attempt > 0) {
                 ESP_LOGW(TAG, "API Retry %d/%d", attempt + 1, cfg.apiRetryCount);
-                vTaskDelay(pdMS_TO_TICKS((uint32_t)cfg.apiRetryDelayS * 1000));
+                vTaskDelay(seconds_to_ticks((uint32_t)cfg.apiRetryDelayS));
             }
             success = sbb_get_departures(cfg.station, deps, filter_ptrs, cfg.destFilterCount);
         }
@@ -666,10 +747,7 @@ void app_main(void) {
         if (success || show_stale) {
             display_departures(success ? deps : last_deps, show_stale);
         } else {
-            draw_header(cfg.station, false);
-            draw_text(0, 20, "API FEHLER");
-            draw_text(0, 32, "PRUEFE NETZ...");
-            oled_flush();
+            display_error();
         }
         redraw_bar(run_forever, active_start, active_end);
 
@@ -703,8 +781,7 @@ void app_main(void) {
         }
 
         // Wartephase mit LED-Blink, OLED-Invert und Uhr-Update
-        TickType_t wait_end = xTaskGetTickCount() +
-            pdMS_TO_TICKS((uint32_t)refresh_sec * 1000);
+        TickType_t wait_end = xTaskGetTickCount() + seconds_to_ticks((uint32_t)refresh_sec);
         bool blink_on = true;
         TickType_t next_toggle = xTaskGetTickCount() + pdMS_TO_TICKS((uint32_t)cfg.ledErrorBlinkMs);
         TickType_t next_clock = xTaskGetTickCount() + pdMS_TO_TICKS(30 * 1000);
@@ -720,10 +797,16 @@ void app_main(void) {
             if (cfg.oledInvertMin > 0 && t >= next_invert) {
                 inverted = !inverted;
                 oled_cmd(inverted ? 0xA7 : 0xA6);
-                next_invert = t + pdMS_TO_TICKS((uint32_t)cfg.oledInvertMin * 60 * 1000);
+                next_invert = t + minutes_to_ticks((uint32_t)cfg.oledInvertMin);
             }
-            if (has_cached && t >= next_clock) {
-                display_departures(last_deps, show_stale);
+            if (t >= next_clock) {
+                // Nur wiederholen, was die äußere Schleife entschieden hat:
+                // sonst überschrieb der 30-s-Redraw die Fehlerseite mit alten
+                // Daten — ohne "!"-Marker, also scheinbar aktuell.
+                if (has_cached && (success || show_stale))
+                    display_departures(last_deps, show_stale);
+                else if (!success)
+                    display_error();
                 redraw_bar(run_forever, active_start, active_end);
                 next_clock = t + pdMS_TO_TICKS(30 * 1000);
             }
@@ -732,8 +815,9 @@ void app_main(void) {
                 next_bar = t + pdMS_TO_TICKS(1000);
             }
             // Button während aktivem Betrieb → sofort schlafen
-            if (gpio_get_level(cfg.buttonGpio) == 0) {
+            if (button_pressed()) {
                 ESP_LOGI(TAG, "Button gedrückt → Schlaf");
+                wait_button_release(5000);   // sonst weckt derselbe Druck sofort wieder
                 force_sleep = true;
                 break;
             }
@@ -746,6 +830,6 @@ void app_main(void) {
 
     if (inverted) oled_cmd(0xA6);
     http_server_stop();
-    show_sleep_info(cfg.sleepAfterS / 60);
+    show_sleep_info((cfg.sleepAfterS + 59) / 60);
     go_to_sleep((uint64_t)cfg.sleepAfterS * 1000000ULL);
 }

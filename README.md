@@ -78,7 +78,7 @@ Einstellungen werden in NVS gespeichert und überleben Neustarts und Deep Sleep.
 2. Prüfen ob aktueller Zeitpunkt in einem aktiven Zeitfenster liegt.
 3. **Außerhalb des Fensters und `sleepEnabled = true`:** Deep Sleep bis zum nächsten Fensterstart (max. `sleepMaxMin` Minuten). Im Wochenend-Schlaf-Fenster (`weekendSleepEnabled = true`) wird direkt bis zum Ende des Wochenend-Fensters geschlafen.
 4. **`sleepEnabled = false`:** Gerät bleibt dauerhaft aktiv, der Fortschrittsbalken auf dem OLED bleibt voll. Sobald Sleep über das Web-Panel wieder aktiviert wird, startet ein frischer Timer (`buttonActiveMin` Minuten) ab dem Speicherzeitpunkt.
-5. **Im Fenster oder per Button geweckt:** Aktiv-Schleife bis Fensterende.
+5. **Im Fenster oder per Button geweckt:** Aktiv-Schleife bis Fensterende (bzw. dauerhaft, wenn `sleepEnabled = false`).
 6. **Button während aktivem Betrieb:** Sofortiger Deep Sleep.
 7. Nach dem Fenster: Deep Sleep für `sleepAfterS` Sekunden (Standard: 300 s = 5 min).
 

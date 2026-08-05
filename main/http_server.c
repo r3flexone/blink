@@ -12,6 +12,7 @@
 #include "mbedtls/base64.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>   // free() für die cJSON-Print-Puffer
 #include <time.h>
 
 static const char *TAG = "http_server";
@@ -207,12 +208,32 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
     // static: 4 KB passen schlecht in den 8-KB-httpd-Stack; der Server
     // verarbeitet Requests sequentiell, daher kein Race.
     static char buf[4096];
-    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (len <= 0) {
+    // httpd_req_recv() liefert nur, was gerade im Socket steht — bei einem
+    // Body über einem TCP-Segment kam sonst abgeschnittenes JSON an und der
+    // Save schlug mit "Invalid JSON" fehl. Deshalb bis content_len einlesen.
+    int total = req->content_len;
+    if (total <= 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
         return ESP_FAIL;
     }
-    buf[len] = '\0';
+    if (total >= (int)sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body zu gross");
+        return ESP_FAIL;
+    }
+    int received = 0, timeouts = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, buf + received, total - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++timeouts > 5) r = 0;    // hängender Client
+            else continue;
+        }
+        if (r <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body unvollstaendig");
+            return ESP_FAIL;
+        }
+        received += r;
+    }
+    buf[received] = '\0';
 
     cJSON *j = cJSON_Parse(buf);
     if (!j) {
@@ -360,6 +381,10 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
 
     cJSON_Delete(j);
 
+    // Die API ist offen (curl, altes Panel) — Werte hart begrenzen, bevor sie
+    // in NVS landen. Sonst bootet das Gerät später mit z.B. endH = 99.
+    nvs_config_sanitize(&cfg);
+
     esp_err_t err = nvs_config_save(&cfg);
     if (err == ESP_OK) {
         extern volatile bool g_cfg_dirty;
@@ -369,12 +394,12 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
     }
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_type(req, "application/json");
-    if (err == ESP_OK) {
-        httpd_resp_sendstr(req, "{\"ok\":true}");
-    } else {
+    if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS save failed");
+        return ESP_FAIL;
     }
-    return err;
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
 }
 
 // ===== GET /api/departures — letzte geholte Abfahrten (Cache aus main.c) =====
