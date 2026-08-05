@@ -106,7 +106,6 @@ async function withServer(mode, fn) {
     check('keine JS-Fehler', errs.length === 0, errs.join(' | '));
     await page.locator('.nav-btn').nth(8).click();
     await sleep(700);
-    await page.screenshot({ path: 'status.png', fullPage: false });
     await page.close();
   });
 
