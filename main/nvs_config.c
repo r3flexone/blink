@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>   // strtol() für die I2C-Adressprüfung
 
 static const char *TAG = "nvs_config";
 #define NVS_NS "blink_cfg"
@@ -141,7 +142,10 @@ void nvs_config_sanitize(blink_config_t *cfg) {
 
     if (!cfg->station[0])
         snprintf(cfg->station, sizeof(cfg->station), "Gelterkinden");
-    if (!cfg->oledAddr[0])
+    // Als 7-Bit-I2C-Adresse lesbar? Sonst zurücksetzen — sonst zeigte das
+    // Panel eine Adresse, die main.c beim Start ohnehin verwirft.
+    long addr = strtol(cfg->oledAddr, NULL, 16);
+    if (addr < 0x08 || addr > 0x77)
         snprintf(cfg->oledAddr, sizeof(cfg->oledAddr), "0x3C");
 }
 

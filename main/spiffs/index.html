@@ -199,12 +199,12 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
         <div class="section-head"><div class="section-title">📡 Netzwerk</div><div class="section-desc">WLAN-Zugangsdaten & NTP-Synchronisation</div></div>
         <div class="card">
           <div class="card-head"><div class="card-title">WLAN</div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">SSID<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Leer = secrets.h wird verwendet (löscht auch das gespeicherte Passwort)</div></div><div class="field-ctrl"><input type="text" class="mid" id="ssid" placeholder="Leer = secrets.h"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Passwort<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Leer = unverändert · Wird nie zurückgesendet</div></div><div class="field-ctrl"><input type="password" class="mid" id="password" placeholder="Leer = unverändert"><button class="btn btn-secondary btn-sm" onclick="togglePass()">👁</button></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">SSID<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Leer = secrets.h wird verwendet (löscht auch das gespeicherte Passwort)</div></div><div class="field-ctrl"><input type="text" class="mid" id="ssid" maxlength="63" placeholder="Leer = secrets.h"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Passwort<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Leer = unverändert · Wird nie zurückgesendet</div></div><div class="field-ctrl"><input type="password" class="mid" id="password" maxlength="63" placeholder="Leer = unverändert"><button class="btn btn-secondary btn-sm" onclick="togglePass()">👁</button></div></div>
         </div>
         <div class="card">
           <div class="card-head"><div><div class="card-title">Panel-Login</div><div class="card-desc">Optional — leer lassen wenn nicht gewünscht (z.B. zuhause)</div></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Panel-Passwort</div><div class="field-hint" id="panel-auth-hint">Kein Login (Standard)</div></div><div class="field-ctrl"><input type="password" class="mid" id="panelPass" placeholder="Leer = unverändert"><button class="btn btn-secondary btn-sm" onclick="clearPanelPass()">Entfernen</button></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Panel-Passwort</div><div class="field-hint" id="panel-auth-hint">Kein Login (Standard)</div></div><div class="field-ctrl"><input type="password" class="mid" id="panelPass" maxlength="31" placeholder="Leer = unverändert"><button class="btn btn-secondary btn-sm" onclick="clearPanelPass()">Entfernen</button></div></div>
         </div>
         <div class="card">
           <div class="card-head"><div class="card-title">NTP</div></div>
@@ -239,14 +239,14 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
         <div class="section-head"><div class="section-title">🔍 Ziel-Filter</div><div class="section-desc">Nur Züge anzeigen deren Ziel den Filter enthält (Substring, case-insensitiv). Leer = alle Züge.</div></div>
         <div class="card">
           <div class="card-head"><div class="card-title">Station</div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Station</div><div class="field-hint">Name wie auf sbb.ch, z.B. "Basel SBB"</div></div><div class="field-ctrl"><input type="text" class="mid" id="station" value="Gelterkinden"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Station</div><div class="field-hint">Name wie auf sbb.ch, z.B. "Basel SBB"</div></div><div class="field-ctrl"><input type="text" class="mid" id="station" maxlength="63" value="Gelterkinden"></div></div>
         </div>
         <div class="card">
           <div class="card-head"><div class="card-title">Filter (max. 4)</div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Filter 1</div><div class="field-hint">z.B. "Basel" oder "Liestal"</div></div><div class="field-ctrl"><input type="text" class="mid" id="filt0" placeholder="Leer = inaktiv"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Filter 2</div><div class="field-hint"></div></div><div class="field-ctrl"><input type="text" class="mid" id="filt1" placeholder="Leer = inaktiv"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Filter 3</div><div class="field-hint"></div></div><div class="field-ctrl"><input type="text" class="mid" id="filt2" placeholder="Leer = inaktiv"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Filter 4</div><div class="field-hint"></div></div><div class="field-ctrl"><input type="text" class="mid" id="filt3" placeholder="Leer = inaktiv"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Filter 1</div><div class="field-hint">z.B. "Basel" oder "Liestal"</div></div><div class="field-ctrl"><input type="text" class="mid" id="filt0" maxlength="31" placeholder="Leer = inaktiv"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Filter 2</div><div class="field-hint"></div></div><div class="field-ctrl"><input type="text" class="mid" id="filt1" maxlength="31" placeholder="Leer = inaktiv"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Filter 3</div><div class="field-hint"></div></div><div class="field-ctrl"><input type="text" class="mid" id="filt2" maxlength="31" placeholder="Leer = inaktiv"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Filter 4</div><div class="field-hint"></div></div><div class="field-ctrl"><input type="text" class="mid" id="filt3" maxlength="31" placeholder="Leer = inaktiv"></div></div>
         </div>
       </div>
 
@@ -324,7 +324,7 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
           <div class="card-head"><div class="card-title">I²C / OLED Display</div><div class="card-desc">SSD1306 · 128×64</div></div>
           <div class="field"><div class="field-meta"><div class="field-label">SDA<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">I²C Datenleitung</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="sdaGpio" value="4" min="0" max="48"></div></div>
           <div class="field"><div class="field-meta"><div class="field-label">SCL<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">I²C Taktleitung</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="sclGpio" value="5" min="0" max="48"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">I²C Adresse<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Format: 0x3C oder 0x3D</div></div><div class="field-ctrl"><input type="text" class="sm" id="oledAddr" value="0x3C" pattern="0x[0-9A-Fa-f]{2}"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">I²C Adresse<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Format: 0x3C oder 0x3D</div></div><div class="field-ctrl"><input type="text" class="sm" id="oledAddr" maxlength="7" value="0x3C" pattern="0x[0-9A-Fa-f]{2}"></div></div>
         </div>
         <div class="card">
           <div class="card-head"><div class="card-title">Button</div></div>
@@ -980,14 +980,22 @@ async function saveConfig() {
     badge.style.display = 'flex';
     setTimeout(() => { badge.style.display = 'none'; }, 2500);
     setDirty(false);
-    showToast(_restartPending
-      ? '✓ Gespeichert — für WLAN/GPIO/OLED noch neu starten'
-      : '✓ Konfiguration gespeichert', _restartPending ? '#F59E0B' : '#22C55E');
-    _restartPending = false;
     if (pp) {
       document.getElementById('panelPass').value = '';
       setAuthHint(true);
     }
+    // Zurücklesen, was das Gerät wirklich gespeichert hat. Die Firmware
+    // begrenzt Werte und weist ungültige GPIOs ab — ohne diesen Schritt
+    // zeigt das Formular weiter die Eingabe und man hält sie für übernommen.
+    const changed = await verifySaved(cfg);
+    if (changed.length) {
+      showToast('⚠ Vom Gerät angepasst: ' + changed.join(', '), '#F59E0B');
+    } else {
+      showToast(_restartPending
+        ? '✓ Gespeichert — für WLAN/GPIO/OLED noch neu starten'
+        : '✓ Konfiguration gespeichert', _restartPending ? '#F59E0B' : '#22C55E');
+    }
+    _restartPending = false;
   } else {
     showToast('✗ Speichern fehlgeschlagen — Einstellungen NICHT übernommen', '#EF4444');
   }
@@ -1026,6 +1034,35 @@ async function clearPanelPass() {
     }
   } catch(e) {}
   showToast('✗ Login entfernen fehlgeschlagen', '#EF4444');
+}
+
+// ===== KONTROLLE NACH DEM SPEICHERN =====
+// Liest die Config zurück und meldet jedes Feld, das das Gerät anders
+// abgelegt hat als gesendet. Ohne das bliebe eine abgeklemmte oder
+// abgelehnte Eingabe im Formular stehen und wirkte übernommen.
+const VERIFY_SKIP = new Set(['password','panelPass','panelPassClear','destFilterCount','panelAuthEnabled']);
+function normVal(v) {
+  if (typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v)) return v.toLowerCase();
+  return v;
+}
+async function verifySaved(sent) {
+  let stored;
+  try {
+    const r = await fetch('/api/config');
+    if (!r.ok) return [];
+    stored = await r.json();
+  } catch(e) { return []; }
+
+  const changed = [];
+  for (const k of Object.keys(sent)) {
+    if (VERIFY_SKIP.has(k)) continue;
+    const a = JSON.stringify(normVal(sent[k]));
+    const b = JSON.stringify(normVal(stored[k]));
+    if (a !== b) changed.push(k);
+  }
+  // Formular auf den tatsächlich gespeicherten Stand bringen
+  await loadConfig();
+  return changed;
 }
 
 // ===== LOAD FROM ESP =====
@@ -1093,9 +1130,10 @@ async function loadConfig() {
     setVal('weekendEndH',         cfg.weekendEndH);
     setVal('weekendEndM',         cfg.weekendEndM);
 
-    if (cfg.destFilters) {
-      cfg.destFilters.forEach((f,i) => { if(i<4) setVal('filt'+i, f); });
-    }
+    // Immer alle vier Slots setzen, auch die leeren: sonst bliebe nach dem
+    // Nachladen ein gelöschter Filter im Formular stehen und sähe aus, als
+    // wäre er noch aktiv.
+    for (let i = 0; i < 4; i++) setVal('filt'+i, (cfg.destFilters && cfg.destFilters[i]) || '');
 
     setAuthHint(!!cfg.panelAuthEnabled);
 

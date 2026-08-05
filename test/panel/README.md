@@ -16,12 +16,27 @@ Abgedeckt sind die Punkte, bei denen ein Fehler teuer ist:
   behalten ihre Position.
 - Keine JavaScript-Fehler beim Laden (fand einen Zugriff in der Dead Zone).
 
+## roundtrip.test.js
+
+Prüft, dass eine Einstellung den Weg *Formular → POST → Gerät → GET →
+Formular* unverändert übersteht — die Fehlerklasse „gespeichert, aber nicht
+übernommen":
+
+- Eine Config mit 8 Zeitfenstern und 4 Filtern wird geladen und **ohne
+  Änderung** gespeichert; alle 44 Felder müssen identisch zurückkommen.
+- Passt das Gerät einen Wert an, muss das Panel warnen und den echten Wert
+  anzeigen statt der Eingabe.
+- Mit maximal langen Eingaben wird der POST-Body ~1500 Bytes groß und
+  überschreitet damit ein TCP-Segment — der Fall, an dem das frühere
+  einmalige `httpd_req_recv()` scheiterte.
+
 ## Ausführen
 
 ```
 npm install --no-save playwright
 npx playwright install chromium
 node test/panel/panel.test.js
+node test/panel/roundtrip.test.js
 ```
 
 Findet Playwright seinen Browser nicht selbst, den Pfad setzen:

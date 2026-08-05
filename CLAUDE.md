@@ -138,7 +138,11 @@ Signature: `bool sbb_get_departures(const char *station, SbbDeparture results[4]
 
 The panel keeps `destFilters` positions: it sends all four slots and only trims trailing empties, so a gap at slot 1 survives a save round-trip. This relies on the firmware skipping empty filter strings.
 
-There is a Playwright smoke test for these behaviours; it runs against a mock server that serves `index.html` plus the three API endpoints — no hardware needed. Worth re-running after panel changes.
+**After a successful save the panel re-reads `/api/config`**, diffs it against what it sent, and names any field the device stored differently (`verifySaved()`). The firmware clamps values and rejects invalid GPIOs; without the read-back the form keeps showing the typed value and the setting looks applied when it isn't. `loadConfig()` therefore has to write *all four* filter slots, including empty ones — otherwise a deleted filter stays visible in the form after the reload.
+
+Text inputs carry `maxlength` matching the firmware buffers (`station`/`ssid`/`password` 63, `panelPass`/`destFilters` 31, `oledAddr` 7). Longer input would be silently truncated by `strncpy()` on the device.
+
+Two Playwright tests under `test/panel/` cover this, against a mock server serving `index.html` plus the API endpoints — no hardware needed. `roundtrip.test.js` in particular loads a maximal config, saves it untouched, and asserts all 44 fields survive; it also documents that a full config POST reaches ~1500 bytes, i.e. more than one TCP segment. Re-run both after panel changes.
 
 ### Font and UTF-8
 
