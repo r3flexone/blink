@@ -446,22 +446,55 @@ static esp_err_t handler_restart(httpd_req_t *req) {
 }
 
 // ===== GET /api/status =====
+// Liefert den Zustand, den das Gerät selbst kennt. Das Panel soll nichts davon
+// aus der Browser-Uhr ableiten müssen — die geht in einer anderen Zeitzone
+// oder bei RTC-Drift anders als die Uhr auf dem Display.
 static esp_err_t handler_status_get(httpd_req_t *req) {
     if (require_auth(req) != ESP_OK) return ESP_OK;
-    // Echte Werte: wifi = im STA-Modus verbunden (kein AP-Fallback),
+    // wifi = im STA-Modus verbunden (kein AP-Fallback),
     // ntp = gueltige Systemzeit vorhanden (tm_year >= 100 == ab Jahr 2000).
     bool wifi = !sbb_wifi_is_ap_mode();
     time_t now; struct tm ti;
     time(&now); localtime_r(&now, &ti);
     bool ntp = (ti.tm_year >= 100);
 
-    char body[40];
-    snprintf(body, sizeof(body), "{\"wifi\":%s,\"ntp\":%s}",
-             wifi ? "true" : "false", ntp ? "true" : "false");
+    char ip[16];
+    sbb_wifi_get_ip(ip, sizeof(ip));
+
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(j, "wifi", wifi);
+    cJSON_AddBoolToObject(j, "ntp",  ntp);
+    cJSON_AddStringToObject(j, "ip", ip);
+    cJSON_AddNumberToObject(j, "rssi", sbb_wifi_get_rssi());
+    cJSON_AddNumberToObject(j, "heapKb", (double)(esp_get_free_heap_size() / 1024));
+    cJSON_AddNumberToObject(j, "uptimeS",
+        (double)(xTaskGetTickCount() / configTICK_RATE_HZ));
+
+    // Geraetezeit als HH:MM:SS — nur wenn sie ueberhaupt gueltig ist
+    if (ntp) {
+        char clk[9];
+        snprintf(clk, sizeof(clk), "%02d:%02d:%02d", ti.tm_hour, ti.tm_min, ti.tm_sec);
+        cJSON_AddStringToObject(j, "time", clk);
+        cJSON_AddNumberToObject(j, "weekday", ti.tm_wday);
+    }
+
+    cJSON_AddBoolToObject(j, "inWindow",   g_in_window);
+    cJSON_AddBoolToObject(j, "runForever", g_run_forever);
+    // Sekunden bis zum geplanten Schlafen; -1 = laeuft unbegrenzt/unbekannt
+    double until = -1;
+    if (!g_run_forever && g_active_end_time > 0 && ntp)
+        until = (double)(g_active_end_time > now ? g_active_end_time - now : 0);
+    cJSON_AddNumberToObject(j, "activeUntilS", until);
+
+    cJSON_AddStringToObject(j, "lastError", sbb_last_error());
+
+    char *body = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_sendstr(req, body);
+    httpd_resp_sendstr(req, body ? body : "{}");
+    free(body);
     return ESP_OK;
 }
 

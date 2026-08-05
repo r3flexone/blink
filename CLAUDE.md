@@ -41,7 +41,7 @@ All application code lives in `main/`. Source files:
 - **`main/sbb.c` / `sbb.h`** — WiFi, HTTP, JSON parsing, filter logic. Public API: `sbb_wifi_init()` and `sbb_get_departures()`.
 - **`main/nvs_config.c` / `nvs_config.h`** — all configuration in NVS. `blink_config_t` is the central struct. Defaults in `nvs_config_defaults()`.
 - **`main/http_server.c` / `http_server.h`** — web panel (SPIFFS + `/api/config` GET/POST + `/api/status` GET + `/api/departures` GET + `/api/restart` POST). Sets `g_cfg_dirty = true` after successful save so the main loop reloads cfg. Optional HTTP Basic Auth via `panelPass` (empty = no auth, the default). `/api/departures` serves `g_last_deps[]`, written by the main loop. Request bodies are read in a loop up to `req->content_len` — a single `httpd_req_recv()` only returns what is currently in the socket, so a config body spanning more than one TCP segment used to arrive truncated and fail as "Invalid JSON".
-- **`main/spiffs/index.html`** — web panel UI, flashed to SPIFFS.
+- **`main/spiffs/index.html`** — web panel UI, flashed to SPIFFS. See "Web panel" below.
 - **`main/cJSON.c` / `cJSON.h`** — vendored JSON library, do not modify.
 
 ### Configuration
@@ -125,6 +125,20 @@ Signature: `bool sbb_get_departures(const char *station, SbbDeparture results[4]
 - Filter matches both the end destination (`to`) and intermediate stops (`passList/station/name`), case-insensitive substring. The `passList` field is requested from the API **only when `filter_count > 0`** to save bandwidth. Empty filter strings are skipped — `str_contains_ci()` treats an empty needle as a match, so one blank entry would silently disable the whole filter.
 - Results are chosen to start at the first departure ≥ current HH:MM; if fewer than 4 future trains are available, the window backs up and some `results[i]` may have `valid = false`.
 - Returns `false` (and logs the reason) on: WiFi down, transport error, **non-2xx HTTP status**, truncated response, unparseable JSON, missing/non-array `stationboard`, or no future train. The HTTP status check matters because `esp_http_client_perform()` returns `ESP_OK` for a 404 too — a misspelled station name would otherwise show up as "JSON Parse Fehler". Read the status code *before* `esp_http_client_cleanup()`.
+
+### Web panel
+
+`GET /api/status` is the panel's single source of truth for device state: `wifi`, `ntp`, `time` (HH:MM:SS), `weekday`, `inWindow`, `runForever`, `activeUntilS` (−1 when unlimited), `ip`, `rssi`, `heapKb`, `uptimeS`, `lastError`. Poll interval is 5 s.
+
+**Never derive device state from the browser clock.** The panel used to render "Systemzeit" and "Im aktiven Zeitfenster" from `new Date()`, which is simply wrong in another timezone or when the RTC has drifted — under a heading that promised real device data. The clock now interpolates locally between polls (`_devSec` + elapsed) and resyncs on every response. The one legitimate local computation is the sleep preview, because it must reflect *unsaved* form values — but it too uses the device clock when one is available.
+
+**`lastError`** comes from `sbb_last_error()`, set at every failure return in `sbb_get_departures()` and cleared on success. It turns the display's generic "API FEHLER" into a diagnosis in the panel (wrong station name, no WiFi, truncated response). The OLED text itself is deliberately unchanged.
+
+**Saving is locked until `GET /api/config` has succeeded once** (`_cfgLoaded`). Without that guard, a failed load leaves the form holding its HTML defaults and one click on Speichern writes those back to the device — five time windows collapse to one, station resets, filters vanish. When the load fails, `checkEsp()` retries it on the next poll and unlocks the button.
+
+The panel keeps `destFilters` positions: it sends all four slots and only trims trailing empties, so a gap at slot 1 survives a save round-trip. This relies on the firmware skipping empty filter strings.
+
+There is a Playwright smoke test for these behaviours; it runs against a mock server that serves `index.html` plus the three API endpoints — no hardware needed. Worth re-running after panel changes.
 
 ### Font and UTF-8
 

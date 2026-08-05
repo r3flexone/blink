@@ -48,7 +48,9 @@ idf.py build flash monitor   # Ctrl-] zum Beenden
 
 Wenn das Gerät aktiv ist (im Zeitfenster oder per Button geweckt), ist das Konfigurations-Panel unter **http://sbb-monitor.local** erreichbar.
 
-Das Panel zeigt oben rechts an ob der ESP gerade **Online** oder **schläft** — Einstellungen können nur bei Online-Status gespeichert werden.
+Das Panel zeigt oben rechts an ob der ESP gerade **Online** oder **schläft**. Speichern ist gesperrt, solange die Konfiguration nicht vom Gerät geladen werden konnte — sonst würden die Formular-Vorgaben die echten Einstellungen überschreiben. Sobald das Gerät antwortet, lädt das Panel automatisch nach und gibt den Button frei.
+
+Ein Punkt am Speichern-Button zeigt ungespeicherte Änderungen. Felder, die erst ein Neustart übernimmt (WLAN, GPIOs, I²C-Adresse), sind mit **Neustart nötig** markiert.
 
 Dort lassen sich einstellen:
 
@@ -63,6 +65,8 @@ Dort lassen sich einstellen:
 - **API & Refresh-Intervalle** — adaptiver Refresh, Retry, Cache-Gültigkeit
 - **Hardware** — GPIO-Belegung für LED, OLED, Button
 - **OLED Invert** — periodisches Invertieren gegen Einbrennen
+
+Die **Status-Seite** zeigt den Zustand, den das Gerät selbst meldet — Gerätezeit, ob ein Zeitfenster aktiv ist und wie lange noch, IP-Adresse und Signalstärke, Laufzeit und freier Speicher, die zuletzt geholten Abfahrten sowie den Grund eines fehlgeschlagenen Abrufs. Nichts davon wird aus der Browser-Uhr abgeleitet.
 
 Einstellungen werden in NVS gespeichert und überleben Neustarts und Deep Sleep. Die meisten greifen sofort — die Hauptschleife lädt die Konfiguration direkt nach dem Speichern neu. Änderungen an WLAN-Zugangsdaten, GPIO-Belegung und I²C-Adresse brauchen einen Neustart (Button oben rechts im Panel).
 

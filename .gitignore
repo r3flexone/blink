@@ -38,3 +38,6 @@ Desktop.ini
 *.tmp
 *~
 *.swp
+# ===== Node (nur Panel-Test) =====
+node_modules/
+package-lock.json

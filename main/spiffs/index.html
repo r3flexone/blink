@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SBB-Monitor — Konfiguration</title>
+<!-- Leeres Icon: verhindert, dass jeder Seitenaufruf zusätzlich /favicon.ico
+     vom ESP anfordert (und dort als 404 im Log landet). -->
+<link rel="icon" href="data:,">
 <style>
 /* Kein Webfont-Import: im AP-Modus gibt es kein Internet, der Request würde
    das Rendern nur verzögern. Die font-family-Listen fallen auf Systemfonts zurück. */
@@ -92,11 +95,29 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
 .esp-pill.offline{background:rgba(245,158,11,.1);border-color:rgba(245,158,11,.3);color:#F59E0B}
 .esp-pill.unknown{background:rgba(100,116,139,.08);border-color:rgba(100,116,139,.2);color:#64748B}
 .esp-pill-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0}
+/* Felder, die erst nach einem Neustart greifen */
+.badge-restart{font-size:9px;color:#F59E0B;background:rgba(245,158,11,.1);border:1px solid rgba(245,158,11,.25);border-radius:3px;padding:1px 5px;margin-left:6px;font-family:'IBM Plex Mono',monospace;white-space:nowrap;vertical-align:middle}
+/* Punkt am Speichern-Button, solange ungespeicherte Änderungen offen sind */
+.btn-primary.dirty::after{content:'';width:6px;height:6px;border-radius:50%;background:#0C0F14;display:inline-block}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.status-line{font-size:11px;color:#94A3B8;font-family:'IBM Plex Mono',monospace;margin-top:3px}
+.status-line b{color:#E2E8F0;font-weight:600}
+.err-banner{display:none;background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.3);color:#FCA5A5;border-radius:6px;padding:10px 14px;font-size:12px;margin-bottom:16px;line-height:1.5}
+.err-banner.show{display:block}
 .toast{position:fixed;bottom:24px;right:24px;background:#1C2333;border:1px solid #22C55E;border-radius:6px;padding:10px 16px;display:none;align-items:center;gap:8px;font-size:13px;box-shadow:0 8px 24px rgba(0,0,0,.5);z-index:100}
 @keyframes slideUp{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
 .toast.show{display:flex;animation:slideUp 200ms ease}
 /* Handy-Layout: Erstsetup läuft über den AP-Modus, meist vom Smartphone aus */
 @media (max-width:700px){
+  /* Die Kopfzeile lief auf schmalen Displays über — der Speichern-Button
+     landete ausserhalb des Viewports, obwohl das Erstsetup per AP-Modus
+     meist vom Smartphone aus passiert. */
+  .topbar{height:auto;min-height:52px;padding:8px 10px;flex-wrap:wrap;gap:8px}
+  .brand-sub{display:none}
+  .brand-name{font-size:13px;white-space:nowrap}
+  .brand-icon{width:24px;height:24px}
+  .save-row{gap:6px}
+  .topbar .btn{padding:6px 9px;font-size:11px}
   .body{flex-direction:column}
   .sidebar{width:100%;flex-direction:row;overflow-x:auto;overflow-y:hidden;padding:4px 8px;border-right:none;border-bottom:1px solid #2A3245}
   .sidebar-label,.sidebar-footer,.nav-desc{display:none}
@@ -106,6 +127,12 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
   .field{flex-wrap:wrap}
   .refresh-grid,.status-grid{grid-template-columns:1fr}
   input.wide{width:160px}input.mid{width:120px}
+  /* Zeitfenster-Zeile: vier Zahlenfelder passen sonst nicht nebeneinander
+     und wurden von .card{overflow:hidden} unsichtbar abgeschnitten. */
+  .tw-entry{gap:3px;padding:8px 10px;flex-wrap:wrap}
+  .tw-entry input.xs{width:44px}
+  .tw-entry .unit{display:none}
+  .time-sep{font-size:13px}
 }
 </style>
 </head>
@@ -127,7 +154,7 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
       <div class="save-row">
         <span class="saved-badge" id="saved-badge">✓ Gespeichert</span>
         <button class="btn btn-secondary" onclick="restartEsp()">⟳ Neustart</button>
-        <button class="btn btn-primary" onclick="saveConfig()">💾 Speichern</button>
+        <button class="btn btn-primary" id="save-btn" onclick="saveConfig()" disabled>💾 Speichern</button>
       </div>
     </div>
   </div>
@@ -172,8 +199,8 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
         <div class="section-head"><div class="section-title">📡 Netzwerk</div><div class="section-desc">WLAN-Zugangsdaten & NTP-Synchronisation</div></div>
         <div class="card">
           <div class="card-head"><div class="card-title">WLAN</div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">SSID</div><div class="field-hint">Leer = secrets.h wird verwendet (löscht auch das gespeicherte Passwort)</div></div><div class="field-ctrl"><input type="text" class="mid" id="ssid" placeholder="Leer = secrets.h"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Passwort</div><div class="field-hint">Leer = unverändert · Wird nie zurückgesendet</div></div><div class="field-ctrl"><input type="password" class="mid" id="password" placeholder="Leer = unverändert"><button class="btn btn-secondary btn-sm" onclick="togglePass()">👁</button></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">SSID<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Leer = secrets.h wird verwendet (löscht auch das gespeicherte Passwort)</div></div><div class="field-ctrl"><input type="text" class="mid" id="ssid" placeholder="Leer = secrets.h"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Passwort<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Leer = unverändert · Wird nie zurückgesendet</div></div><div class="field-ctrl"><input type="password" class="mid" id="password" placeholder="Leer = unverändert"><button class="btn btn-secondary btn-sm" onclick="togglePass()">👁</button></div></div>
         </div>
         <div class="card">
           <div class="card-head"><div><div class="card-title">Panel-Login</div><div class="card-desc">Optional — leer lassen wenn nicht gewünscht (z.B. zuhause)</div></div></div>
@@ -291,17 +318,17 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
         <div class="section-head"><div class="section-title">🔌 Hardware</div><div class="section-desc">GPIO-Belegung, I²C und OLED-Display</div></div>
         <div class="card">
           <div class="card-head"><div class="card-title">NeoPixel LED</div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">LED GPIO</div><div class="field-hint">LED_GPIO · Standard: 48</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="ledGpio" value="48" min="0" max="48"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">LED GPIO<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">LED_GPIO · Standard: 48</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="ledGpio" value="48" min="0" max="48"></div></div>
         </div>
         <div class="card">
           <div class="card-head"><div class="card-title">I²C / OLED Display</div><div class="card-desc">SSD1306 · 128×64</div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">SDA</div><div class="field-hint">I²C Datenleitung</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="sdaGpio" value="4" min="0" max="48"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">SCL</div><div class="field-hint">I²C Taktleitung</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="sclGpio" value="5" min="0" max="48"></div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">I²C Adresse</div><div class="field-hint">Format: 0x3C oder 0x3D</div></div><div class="field-ctrl"><input type="text" class="sm" id="oledAddr" value="0x3C" pattern="0x[0-9A-Fa-f]{2}"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">SDA<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">I²C Datenleitung</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="sdaGpio" value="4" min="0" max="48"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">SCL<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">I²C Taktleitung</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="sclGpio" value="5" min="0" max="48"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">I²C Adresse<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">Format: 0x3C oder 0x3D</div></div><div class="field-ctrl"><input type="text" class="sm" id="oledAddr" value="0x3C" pattern="0x[0-9A-Fa-f]{2}"></div></div>
         </div>
         <div class="card">
           <div class="card-head"><div class="card-title">Button</div></div>
-          <div class="field"><div class="field-meta"><div class="field-label">Button GPIO</div><div class="field-hint">BUTTON_GPIO · Standard: 0 · nur RTC-GPIO 0–21 (Deep-Sleep-Wakeup)</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="buttonGpio" value="0" min="0" max="21"></div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Button GPIO<span class="badge-restart">Neustart nötig</span></div><div class="field-hint">BUTTON_GPIO · Standard: 0 · nur RTC-GPIO 0–21 (Deep-Sleep-Wakeup)</div></div><div class="field-ctrl"><span class="prefix">GPIO_</span><input type="number" class="xs" id="buttonGpio" value="0" min="0" max="21"></div></div>
           <div class="field"><div class="field-meta"><div class="field-label">Wakeup-Modus</div><div class="field-hint">ESP_EXT1_WAKEUP_ANY_LOW</div></div><div class="field-ctrl"><span class="pill pill-blue">ANY_LOW</span></div></div>
         </div>
         <div class="card">
@@ -312,7 +339,8 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
 
       <!-- STATUS -->
       <div id="sec-status" class="section">
-        <div class="section-head"><div class="section-title">📊 Status</div><div class="section-desc">Live-Gerätestatus — Abfahrten und LED zeigen die echten Daten des Geräts</div></div>
+        <div class="section-head"><div class="section-title">📊 Status</div><div class="section-desc">Live-Gerätestatus — alle Werte kommen vom Gerät, nicht aus dem Browser</div></div>
+        <div class="err-banner" id="err-banner"></div>
         <div class="status-grid">
           <div class="status-card">
             <div class="status-card-title">NeoPixel LED</div>
@@ -327,22 +355,23 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
               <div style="width:14px;height:14px;border-radius:50%;background:#FF0000;cursor:pointer;border:2px solid transparent" onclick="simLed('cancel')" title="Ausfall"></div>
               <div style="width:14px;height:14px;border-radius:50%;background:#FF8000;cursor:pointer;border:2px solid transparent" onclick="simLed('load')" title="Laden"></div>
             </div>
-            <div style="font-size:10px;color:#64748B;margin-top:6px">Klicken zum Simulieren</div>
+            <div style="font-size:10px;color:#64748B;margin-top:6px">Farbvorschau — die Anzeige oben folgt dem echten Status</div>
           </div>
           <div class="status-card">
-            <div class="status-card-title">Systemzeit</div>
+            <div class="status-card-title">Gerätezeit</div>
             <div class="clock" id="clock">--:--:--</div>
             <div style="display:flex;align-items:center;gap:6px">
-              <div style="width:6px;height:6px;border-radius:50%" id="win-dot"></div>
-              <span id="win-label" style="font-size:11px;color:#64748B">Berechne...</span>
+              <div style="width:6px;height:6px;border-radius:50%;background:#64748B" id="win-dot"></div>
+              <span id="win-label" style="font-size:11px;color:#64748B">Warte auf Gerät…</span>
             </div>
-            <div id="win-range" style="font-size:11px;color:#64748B;margin-top:4px;font-family:'IBM Plex Mono',monospace"></div>
+            <div class="status-line" id="active-until"></div>
           </div>
           <div class="status-card">
             <div class="status-card-title">WLAN</div>
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><span style="font-size:16px">📶</span><span id="wifi-label" style="font-size:13px;color:#64748B;font-weight:600">Unbekannt</span></div>
             <div style="font-size:12px;color:#94A3B8;font-family:'IBM Plex Mono',monospace" id="status-ssid">—</div>
-            <div style="font-size:11px;color:#64748B;margin-top:4px">NTP: pool.ntp.org</div>
+            <div class="status-line" id="status-net">—</div>
+            <div class="status-line" id="status-dev"></div>
           </div>
           <div class="status-card">
             <div class="status-card-title">OLED Display</div>
@@ -367,9 +396,15 @@ function show(id, btn) {
   document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   document.getElementById('sec-' + id).classList.add('active');
-  btn.classList.add('active');
+  if (btn) btn.classList.add('active');
   if (id === 'status') { syncStatus(); loadDepartures(); }
   updateSleepPreview();
+}
+// Sektion per Name öffnen, ohne den Button zu kennen (für Fehler-Sprünge)
+function gotoSection(id) {
+  const btn = Array.from(document.querySelectorAll('.nav-btn'))
+    .find(b => (b.getAttribute('onclick') || '').includes("'" + id + "'"));
+  show(id, btn);
 }
 
 // ===== TOGGLES =====
@@ -442,11 +477,13 @@ function addWindow() {
   if (windows.length >= 8) return;
   windows.push({ startH:7, startM:0, endH:7, endM:30 });
   renderWindows();
+  setDirty(true);
 }
 
 function removeWindow(i) {
   windows.splice(i, 1);
   renderWindows();
+  setDirty(true);
 }
 
 function pad(n) { return String(n).padStart(2,'0'); }
@@ -526,25 +563,80 @@ renderWindows();
   });
 });
 
-// ===== CLOCK =====
+// ===== GERÄTEZEIT =====
+// Die Uhr des ESP, nicht die des Browsers: zwischen zwei /api/status-Abfragen
+// wird lokal weitergezählt und bei jeder Antwort neu gesetzt. Die Browser-Uhr
+// wäre in einer anderen Zeitzone oder bei RTC-Drift schlicht falsch.
+// Deklaration hier oben, weil updateSleepPreview() weiter unten schon beim
+// Laden läuft — als let unterhalb wäre das ein Zugriff in der Dead Zone.
+let _status = null;    // letzte /api/status-Antwort
+let _devSec = null;    // Sekunden seit Mitternacht laut Gerät
+let _devAt  = 0;       // Date.now() beim Empfang
+
+function setDeviceTime(hhmmss) {
+  if (!hhmmss) { _devSec = null; return; }
+  const p = hhmmss.split(':').map(Number);
+  if (p.length !== 3 || p.some(isNaN)) { _devSec = null; return; }
+  _devSec = p[0]*3600 + p[1]*60 + p[2];
+  _devAt  = Date.now();
+}
+
+function fmtDur(sec) {
+  sec = Math.max(0, Math.round(sec));
+  const h = Math.floor(sec/3600), m = Math.floor((sec%3600)/60);
+  if (h > 0) return h + ' h ' + m + ' min';
+  if (m > 0) return m + ' min';
+  return sec + ' s';
+}
+
 function updateClock() {
-  const now = new Date();
-  document.getElementById('clock').textContent =
-    [now.getHours(),now.getMinutes(),now.getSeconds()].map(n=>pad(n)).join(':');
-  const cur = now.getHours()*60 + now.getMinutes();
-  const inW = windows.some(w => inWindowAt(cur, w));
-  const dot = document.getElementById('win-dot');
-  const lbl = document.getElementById('win-label');
-  if (dot) { dot.style.background = inW ? '#22C55E' : '#64748B'; }
-  if (lbl) { lbl.textContent = inW ? 'Im aktiven Zeitfenster' : 'Außerhalb der Zeitfenster'; lbl.style.color = inW ? '#22C55E' : '#64748B'; }
-  const range = document.getElementById('win-range');
-  if (range && windows.length > 0) {
-    const w = windows[0];
-    range.textContent = `Erstes Fenster: ${pad(w.startH)}:${pad(w.startM)} – ${pad(w.endH)}:${pad(w.endM)}`;
-  }
+  const el = document.getElementById('clock');
+  if (!el) return;
+  if (_devSec === null) { el.textContent = '--:--:--'; return; }
+  const t = (_devSec + Math.floor((Date.now() - _devAt)/1000)) % 86400;
+  el.textContent = [Math.floor(t/3600), Math.floor((t%3600)/60), t%60].map(pad).join(':');
 }
 setInterval(updateClock, 1000);
 updateClock();
+
+// Fenster-/Aktiv-Status aus der Geräte-Antwort, nicht selbst gerechnet
+function renderDeviceState(s) {
+  const dot = document.getElementById('win-dot');
+  const lbl = document.getElementById('win-label');
+  const until = document.getElementById('active-until');
+  if (!lbl) return;
+  if (!s) {
+    if (dot) dot.style.background = '#64748B';
+    lbl.textContent = 'Gerät nicht erreichbar'; lbl.style.color = '#64748B';
+    if (until) until.textContent = '';
+    return;
+  }
+  if (!s.ntp) {
+    if (dot) dot.style.background = '#EF4444';
+    lbl.textContent = 'Keine gültige Zeit (NTP fehlt)'; lbl.style.color = '#EF4444';
+    if (until) until.textContent = '';
+    return;
+  }
+  const inW = !!s.inWindow;
+  if (dot) dot.style.background = inW ? '#22C55E' : '#64748B';
+  lbl.textContent = inW ? 'Im aktiven Zeitfenster' : 'Außerhalb der Zeitfenster';
+  lbl.style.color = inW ? '#22C55E' : '#64748B';
+  if (!until) return;
+  if (s.runForever)              until.innerHTML = 'Bleibt wach — <b>Schlaf deaktiviert</b>';
+  else if (s.activeUntilS >= 0)  until.innerHTML = 'Schläft in <b>' + fmtDur(s.activeUntilS) + '</b>';
+  else                           until.textContent = '';
+}
+
+function renderErrBanner(msg) {
+  const b = document.getElementById('err-banner');
+  if (!b) return;
+  if (msg) {
+    b.textContent = '⚠ Letzter Abruf fehlgeschlagen: ' + msg;
+    b.classList.add('show');
+  } else {
+    b.classList.remove('show');
+  }
+}
 
 // ===== SLEEP PREVIEW =====
 function fmtMin(n) {
@@ -563,9 +655,18 @@ function updateSleepPreview() {
     return;
   }
 
-  const now    = new Date();
-  const wday   = now.getDay();
-  const cur    = now.getHours()*60 + now.getMinutes();
+  // Vorschau gegen die Geräteuhr rechnen, solange sie bekannt ist — sonst
+  // stimmt sie in einer anderen Zeitzone nicht mit dem Display überein.
+  let wday, cur;
+  if (_status && _status.ntp && _devSec !== null) {
+    const t = (_devSec + Math.floor((Date.now() - _devAt)/1000)) % 86400;
+    cur  = Math.floor(t / 60);
+    wday = (_status.weekday !== undefined) ? _status.weekday : new Date().getDay();
+  } else {
+    const now = new Date();
+    wday = now.getDay();
+    cur  = now.getHours()*60 + now.getMinutes();
+  }
   const max    = parseInt(document.getElementById('sleepMaxMin')?.value) || 120;
   const wdOnly = document.getElementById('toggle-wdonly')?.classList.contains('on');
   const isWE   = (wday === 0 || wday === 6);
@@ -688,6 +789,33 @@ setInterval(() => {
   if (document.getElementById('sec-status')?.classList.contains('active')) loadDepartures();
 }, 15000);
 
+// ===== UNGESPEICHERTE ÄNDERUNGEN =====
+// Ohne Marker klickt man durch acht Sektionen und vergisst das Speichern.
+let _dirty = false;
+// Felder, die erst ein Neustart übernimmt (siehe Badges im Markup)
+const RESTART_FIELDS = ['ssid','password','ledGpio','sdaGpio','sclGpio','oledAddr','buttonGpio'];
+let _restartPending = false;
+
+function setDirty(on) {
+  _dirty = on;
+  const b = document.getElementById('save-btn');
+  if (b) b.classList.toggle('dirty', on);
+  if (!on) _restartPending = false;
+}
+document.addEventListener('input', e => {
+  if (!e.target.closest('main')) return;
+  if (RESTART_FIELDS.includes(e.target.id)) _restartPending = true;
+  setDirty(true);
+});
+document.addEventListener('change', e => {
+  if (e.target.closest('main')) setDirty(true);
+});
+window.addEventListener('beforeunload', e => {
+  if (_dirty) { e.preventDefault(); e.returnValue = ''; }
+});
+
+let _cfgLoaded = false;
+
 // ===== ESP-STATUS =====
 let _espOnline = null;
 async function checkEsp() {
@@ -703,25 +831,60 @@ async function checkEsp() {
       pill.className = 'esp-pill online';
       lbl.textContent = 'Online';
       const s = await r.json();
+      _status = s;
       setWifiLabel(s.wifi ? 'Verbunden' : 'AP-Modus (kein WLAN)',
                    s.wifi ? '#22C55E' : '#F59E0B');
+      setDeviceTime(s.time);
+      updateClock();
+      renderDeviceState(s);
+      renderErrBanner(s.lastError);
+      renderNetInfo(s);
+      // Config konnte beim Laden nicht geholt werden (Gerät schlief) —
+      // jetzt nachholen, sonst bliebe das Speichern dauerhaft gesperrt.
+      if (!_cfgLoaded) loadConfig();
       return;
     }
   } catch(_) {}
   _espOnline = false;
+  _status = null;
   pill.className = 'esp-pill offline';
   lbl.textContent = 'Schläft';
   setWifiLabel('Nicht erreichbar', '#64748B');
+  _devSec = null;
+  renderDeviceState(null);
+  renderNetInfo(null);
 }
 function setWifiLabel(text, color) {
   const w = document.getElementById('wifi-label');
   if (w) { w.textContent = text; w.style.color = color; }
+}
+function renderNetInfo(s) {
+  const net = document.getElementById('status-net');
+  const dev = document.getElementById('status-dev');
+  if (net) {
+    if (!s)            net.textContent = '—';
+    else if (s.ip)     net.innerHTML = 'IP <b>' + esc(s.ip) + '</b>' +
+                                       (s.rssi ? ' · ' + s.rssi + ' dBm' : '');
+    else               net.textContent = 'Keine IP (AP-Modus: 192.168.4.1)';
+  }
+  if (dev) {
+    dev.textContent = s
+      ? 'Läuft seit ' + fmtDur(s.uptimeS) + ' · ' + s.heapKb + ' KB frei'
+      : '';
+  }
 }
 checkEsp();
 setInterval(checkEsp, 5000);
 
 // ===== SAVE =====
 async function saveConfig() {
+  // Ohne erfolgreich geladene Config stehen im Formular nur die HTML-Defaults.
+  // Ein Speichern würde damit die echte Konfiguration überschreiben — also
+  // sperren, bis /api/config einmal durchgekommen ist.
+  if (!_cfgLoaded) {
+    showToast('⚠ Konfiguration noch nicht geladen – Speichern gesperrt', '#EF4444');
+    return;
+  }
   if (_espOnline === false) {
     showToast('⚠ ESP schläft – nicht gespeichert', '#F59E0B');
     return;
@@ -731,7 +894,8 @@ async function saveConfig() {
   const dsm = numVal('delaySmallMin');
   const dbm = numVal('delayBigMin');
   if (dsm >= dbm) {
-    alert('Fehler: "Leicht verspätet ab" muss kleiner sein als "Stark verspätet ab".');
+    showToast('✗ "Leicht verspätet ab" muss kleiner sein als "Stark verspätet ab"', '#EF4444');
+    gotoSection('verhalten');   // dorthin springen, wo der Fehler steht
     return;
   }
   windows.forEach(w => {
@@ -739,12 +903,13 @@ async function saveConfig() {
     w.endH   = clamp(w.endH,   0, 23); w.endM   = clamp(w.endM,   0, 59);
   });
 
-  // Ziel-Filter: nur nicht-leere
+  // Ziel-Filter: Positionen beibehalten (Lücken bleiben als "" erhalten),
+  // nur die leeren am Ende abschneiden. Sonst rutscht Filter 3 beim Speichern
+  // auf Platz 1 und man findet seine Eingaben nicht wieder. Leere Einträge
+  // ignoriert die Firmware beim Vergleich.
   const filters = [];
-  for (let i = 0; i < 4; i++) {
-    const v = document.getElementById('filt'+i)?.value.trim();
-    if (v) filters.push(v);
-  }
+  for (let i = 0; i < 4; i++) filters.push(document.getElementById('filt'+i)?.value.trim() || '');
+  while (filters.length && !filters[filters.length-1]) filters.pop();
 
   const cfg = {
     timeWindows: windows,
@@ -814,7 +979,11 @@ async function saveConfig() {
     const badge = document.getElementById('saved-badge');
     badge.style.display = 'flex';
     setTimeout(() => { badge.style.display = 'none'; }, 2500);
-    showToast('✓ Konfiguration gespeichert', '#22C55E');
+    setDirty(false);
+    showToast(_restartPending
+      ? '✓ Gespeichert — für WLAN/GPIO/OLED noch neu starten'
+      : '✓ Konfiguration gespeichert', _restartPending ? '#F59E0B' : '#22C55E');
+    _restartPending = false;
     if (pp) {
       document.getElementById('panelPass').value = '';
       setAuthHint(true);
@@ -935,9 +1104,17 @@ async function loadConfig() {
       const el = document.getElementById('led'+n+'Color');
       if (el) el.dispatchEvent(new Event('input'));
     });
-  } catch(e) { /* nicht auf ESP */ }
+
+    // Erst jetzt darf gespeichert werden — vorher stünden im Formular nur
+    // die HTML-Defaults. Das Befüllen selbst zählt nicht als Änderung.
+    _cfgLoaded = true;
+    setDirty(false);
+    const btn = document.getElementById('save-btn');
+    if (btn) { btn.disabled = false; btn.title = ''; }
+  } catch(e) { /* nicht auf ESP — checkEsp() versucht es erneut */ }
 }
 
+document.getElementById('save-btn').title = 'Warte auf Konfiguration vom Gerät…';
 loadConfig();
 </script>
 </body>

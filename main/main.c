@@ -28,9 +28,12 @@ static blink_config_t cfg;
 // Gesetzt vom HTTP-Server nach erfolgreichem POST /api/config
 volatile bool g_cfg_dirty = false;
 
-// Für GET /api/departures (Deklaration in http_server.h)
+// Für GET /api/departures und /api/status (Deklarationen in http_server.h)
 SbbDeparture g_last_deps[4];
 time_t g_last_deps_time = 0;
+volatile bool g_in_window = false;
+volatile bool g_run_forever = false;
+time_t g_active_end_time = 0;
 
 #define OLED_WIDTH  128
 #define OLED_HEIGHT  64
@@ -346,6 +349,16 @@ static void redraw_bar(bool run_forever, TickType_t active_start, TickType_t act
     flush_page7();
 }
 
+// Restlaufzeit als Wanduhr-Zeitpunkt spiegeln, damit GET /api/status sagen
+// kann, bis wann das Gerät wach bleibt — Ticks nützen dem Panel nichts.
+static void publish_active_end(TickType_t end) {
+    TickType_t now_ticks = xTaskGetTickCount();
+    time_t now_wall; time(&now_wall);
+    uint32_t remain_s = (end > now_ticks)
+        ? (uint32_t)((end - now_ticks) / configTICK_RATE_HZ) : 0;
+    g_active_end_time = now_wall + (time_t)remain_s;
+}
+
 // ===== SLEEP =====
 static void go_to_sleep(uint64_t us) {
     memset(framebuffer, 0, sizeof(framebuffer));
@@ -550,6 +563,7 @@ void app_main(void) {
             }
             if (inside) {
                 in_window = true;
+                g_in_window = true;
                 int rem = we - cur_min;
                 if (rem <= 0) rem += 24 * 60;   // Ende liegt am Folgetag
                 active_rem_min = rem;
@@ -661,6 +675,7 @@ void app_main(void) {
         if (rem < 1) rem = 1;
         active_end = active_start + minutes_to_ticks((uint32_t)rem);
     }
+    publish_active_end(active_end);
 
     // Dest-Filter: Pointer-Array aus cfg.destFilters[][] bauen
     const char *filter_ptrs[4] = {0};
@@ -681,6 +696,7 @@ void app_main(void) {
     // Gilt auch im Zeitfenster — sonst wäre das Gerät bei "Schlaf aus" nach dem
     // Fensterende trotzdem für sleepAfterS eingeschlafen.
     bool run_forever = !cfg.sleepEnabled && !woken_by_button;
+    g_run_forever = run_forever;
     TickType_t next_invert = xTaskGetTickCount() +
         minutes_to_ticks((uint32_t)(cfg.oledInvertMin > 0 ? cfg.oledInvertMin : 1440));
 
@@ -695,10 +711,12 @@ void app_main(void) {
                 ESP_LOGI(TAG, "Config neu geladen (Web-Panel)");
             }
             run_forever = !cfg.sleepEnabled && !woken_by_button;
+            g_run_forever = run_forever;
             if (was_forever && !run_forever) {
                 // Sleep wurde aktiviert → frischen buttonActiveMin-Timer starten
                 active_start = xTaskGetTickCount();
                 active_end   = active_start + minutes_to_ticks((uint32_t)cfg.buttonActiveMin);
+                publish_active_end(active_end);
                 ESP_LOGI(TAG, "Sleep aktiviert → Timer %d Min", cfg.buttonActiveMin);
             }
             // Invert-Intervall neu ansetzen; bei 0 (aus) sofort zurückschalten,

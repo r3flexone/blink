@@ -2,6 +2,7 @@
 #include "esp_log.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
+#include "esp_netif.h"
 #include "esp_http_client.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -10,6 +11,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <time.h>   // time(), localtime_r() — bisher nur transitiv mitgekommen
 
 static const char *TAG = "sbb";
@@ -28,6 +30,21 @@ static bool wifi_ap_mode = false;
 static char *http_buf = NULL;
 static int  http_buf_len = 0;
 static bool http_truncated = false;
+static esp_netif_t *sta_netif = NULL;
+
+// Grund des letzten Fehlschlags — nur für die Anzeige im Panel.
+static char last_error[64] = "";
+static void set_error(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void set_error(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(last_error, sizeof(last_error), fmt, ap);
+    va_end(ap);
+    ESP_LOGE(TAG, "%s", last_error);
+}
+
+const char *sbb_last_error(void) { return last_error; }
 
 static void sbb_start_ap(void)
 {
@@ -85,7 +102,7 @@ void sbb_wifi_init(const char *ssid, const char *password)
     wifi_event_group = xEventGroupCreate();
     esp_netif_init();
     esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
+    sta_netif = esp_netif_create_default_wifi_sta();
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
@@ -113,6 +130,24 @@ void sbb_wifi_init(const char *ssid, const char *password)
 }
 
 bool sbb_wifi_is_ap_mode(void) { return wifi_ap_mode; }
+
+bool sbb_wifi_get_ip(char *out, size_t len)
+{
+    if (!out || len == 0) return false;
+    out[0] = 0;
+    if (!wifi_ready || !sta_netif) return false;
+    esp_netif_ip_info_t ip;
+    if (esp_netif_get_ip_info(sta_netif, &ip) != ESP_OK) return false;
+    snprintf(out, len, IPSTR, IP2STR(&ip.ip));
+    return true;
+}
+
+int sbb_wifi_get_rssi(void)
+{
+    wifi_ap_record_t ap;
+    if (!wifi_ready || esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return 0;
+    return ap.rssi;
+}
 
 bool sbb_wifi_reconnect(void)
 {
@@ -218,11 +253,11 @@ static bool str_contains_ci(const char *haystack, const char *needle)
 bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
                         const char *dest_filters[], int filter_count)
 {
-    if (!wifi_ready) { ESP_LOGE(TAG, "WiFi nicht bereit!"); return false; }
+    if (!wifi_ready) { set_error("Kein WLAN"); return false; }
 
     if (http_buf == NULL) {
         http_buf = malloc(HTTP_BUF_SIZE);
-        if (!http_buf) { ESP_LOGE(TAG, "Kein RAM!"); return false; }
+        if (!http_buf) { set_error("Zu wenig RAM fuer den HTTP-Puffer"); return false; }
     }
 
     memset(results, 0, sizeof(SbbDeparture) * DEP_COUNT);
@@ -274,34 +309,32 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         .buffer_size_tx = 1024,
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) { ESP_LOGE(TAG, "HTTP init fehlgeschlagen"); return false; }
+    if (!client) { set_error("HTTP-Client-Init fehlgeschlagen"); return false; }
     esp_err_t err = esp_http_client_perform(client);
     // Status vor dem cleanup lesen — danach ist das Handle ungültig.
     int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : 0;
     esp_http_client_cleanup(client);
     ESP_LOGI(TAG, "HTTP %d (%d bytes)", status, http_buf_len);
 
-    if (err != ESP_OK) { ESP_LOGE(TAG, "HTTP: %s", esp_err_to_name(err)); return false; }
+    if (err != ESP_OK) { set_error("Verbindung fehlgeschlagen: %s", esp_err_to_name(err)); return false; }
     // perform() liefert auch bei 404/500 ESP_OK — der Body ist dann ein
     // Fehler-JSON ohne stationboard, was sonst als "JSON Fehler" erschiene.
     if (status < 200 || status >= 300) {
-        ESP_LOGE(TAG, "API antwortet mit HTTP %d (Station '%s' falsch geschrieben?)",
-                 status, station);
+        set_error("HTTP %d — Station \'%s\' falsch geschrieben?", status, station);
         return false;
     }
     if (http_truncated) {
-        ESP_LOGE(TAG, "Antwort > %d KB, abgeschnitten — Filter reduzieren",
-                 HTTP_BUF_SIZE / 1024);
+        set_error("Antwort > %d KB, abgeschnitten", HTTP_BUF_SIZE / 1024);
         return false;
     }
-    if (http_buf_len == 0) { ESP_LOGE(TAG, "Leere Antwort!"); return false; }
+    if (http_buf_len == 0) { set_error("Leere Antwort von der API"); return false; }
 
     cJSON *root = cJSON_Parse(http_buf);
-    if (!root) { ESP_LOGE(TAG, "JSON Parse Fehler"); return false; }
+    if (!root) { set_error("Antwort ist kein gueltiges JSON"); return false; }
 
     cJSON *stationboard = cJSON_GetObjectItem(root, "stationboard");
     if (!cJSON_IsArray(stationboard)) {
-        ESP_LOGE(TAG, "Kein stationboard-Array in der Antwort");
+        set_error("Kein stationboard in der Antwort");
         cJSON_Delete(root);
         return false;
     }
@@ -399,7 +432,11 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
 
     cJSON_Delete(root);
     if (filter_count > 0) ESP_LOGI(TAG, "Filter: %d/%d Züge passen", n, total_trains);
-    if (n == 0) return false;
+    if (n == 0) {
+        if (filter_count > 0) set_error("Kein Zug passt zum Ziel-Filter");
+        else                  set_error("Keine Zuege fuer '%s'", station);
+        return false;
+    }
 
     // Wrap-fähiger Vergleich: ein Zug gilt als zukünftig, wenn er innerhalb
     // der nächsten 12 h liegt (modulo Tag). Sonst würde um 23:50 ein
@@ -411,8 +448,8 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         if (fwd <= 12 * 60) { target_idx = i; break; }
     }
     if (target_idx < 0) {
-        ESP_LOGW(TAG, "Alle %d Züge in der Vergangenheit (cur=%02d:%02d)",
-                 n, target_min/60, target_min%60);
+        set_error("Alle %d Zuege in der Vergangenheit (%02d:%02d)",
+                  n, target_min/60, target_min%60);
         return false;
     }
 
@@ -431,5 +468,6 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         results[i].delay = entries[idx].delay;
         results[i].cancelled = entries[idx].cancelled;
     }
+    last_error[0] = 0;
     return true;
 }
