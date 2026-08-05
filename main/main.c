@@ -8,7 +8,7 @@
 #include "led_strip.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
-#include "lwip/apps/sntp.h"
+#include "esp_sntp.h"
 #include "sbb.h"
 #include "secrets.h"
 #include "driver/gpio.h"
@@ -326,10 +326,10 @@ static void wifi_connect_from_cfg(void) {
 
 // ===== NTP =====
 static bool ntp_sync(void) {
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_setservername(0, "pool.ntp.org");
-    if (!sntp_enabled()) sntp_init();
-    else { sntp_stop(); sntp_init(); }
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    if (!esp_sntp_enabled()) esp_sntp_init();
+    else { esp_sntp_stop(); esp_sntp_init(); }
 
     time_t now; struct tm ti;
     int steps = (cfg.ntpTimeoutS * 1000) / 250;
