@@ -38,9 +38,12 @@ Desktop.ini
 *.tmp
 *~
 *.swp
+
 # ===== Node (nur Panel-Test) =====
 node_modules/
 package-lock.json
 
 # ===== Test-Artefakte =====
-*.png
+# Bewusst eng gefasst: ein globales *.png wuerde auch Bilder fuers README
+# stillschweigend schlucken.
+test/panel/*.png
