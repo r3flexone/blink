@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 // Eine Abfahrt ab dem konfigurierten Bahnhof
 typedef struct {
@@ -20,6 +21,17 @@ bool sbb_wifi_is_ap_mode(void);
 
 // WiFi neu verbinden falls Verbindung verloren (no-op wenn schon verbunden)
 bool sbb_wifi_reconnect(void);
+
+// Aktuelle STA-IP als "a.b.c.d". Schreibt "" und liefert false wenn nicht
+// verbunden. Für die Status-Anzeige im Panel, wenn mDNS nicht funktioniert.
+bool sbb_wifi_get_ip(char *out, size_t len);
+
+// Signalstärke der aktuellen Verbindung in dBm (0 = unbekannt).
+int sbb_wifi_get_rssi(void);
+
+// Grund des letzten fehlgeschlagenen Abrufs, "" nach einem erfolgreichen.
+// Zeigt im Panel, warum "API FEHLER" auf dem Display steht.
+const char *sbb_last_error(void);
 
 // Nächste 4 Abfahrten ab jetzt holen.
 //   station:      Bahnhof-Name wie auf sbb.ch (z.B. "Gelterkinden")

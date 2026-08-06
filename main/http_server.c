@@ -12,6 +12,7 @@
 #include "mbedtls/base64.h"
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>   // free() für die cJSON-Print-Puffer
 #include <time.h>
 
 static const char *TAG = "http_server";
@@ -207,12 +208,32 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
     // static: 4 KB passen schlecht in den 8-KB-httpd-Stack; der Server
     // verarbeitet Requests sequentiell, daher kein Race.
     static char buf[4096];
-    int len = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (len <= 0) {
+    // httpd_req_recv() liefert nur, was gerade im Socket steht — bei einem
+    // Body über einem TCP-Segment kam sonst abgeschnittenes JSON an und der
+    // Save schlug mit "Invalid JSON" fehl. Deshalb bis content_len einlesen.
+    int total = req->content_len;
+    if (total <= 0) {
         httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Empty body");
         return ESP_FAIL;
     }
-    buf[len] = '\0';
+    if (total >= (int)sizeof(buf)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body zu gross");
+        return ESP_FAIL;
+    }
+    int received = 0, timeouts = 0;
+    while (received < total) {
+        int r = httpd_req_recv(req, buf + received, total - received);
+        if (r == HTTPD_SOCK_ERR_TIMEOUT) {
+            if (++timeouts > 5) r = 0;    // hängender Client
+            else continue;
+        }
+        if (r <= 0) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Body unvollstaendig");
+            return ESP_FAIL;
+        }
+        received += r;
+    }
+    buf[received] = '\0';
 
     cJSON *j = cJSON_Parse(buf);
     if (!j) {
@@ -360,6 +381,10 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
 
     cJSON_Delete(j);
 
+    // Die API ist offen (curl, altes Panel) — Werte hart begrenzen, bevor sie
+    // in NVS landen. Sonst bootet das Gerät später mit z.B. endH = 99.
+    nvs_config_sanitize(&cfg);
+
     esp_err_t err = nvs_config_save(&cfg);
     if (err == ESP_OK) {
         extern volatile bool g_cfg_dirty;
@@ -369,12 +394,12 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
     }
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_type(req, "application/json");
-    if (err == ESP_OK) {
-        httpd_resp_sendstr(req, "{\"ok\":true}");
-    } else {
+    if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS save failed");
+        return ESP_FAIL;
     }
-    return err;
+    httpd_resp_sendstr(req, "{\"ok\":true}");
+    return ESP_OK;
 }
 
 // ===== GET /api/departures — letzte geholte Abfahrten (Cache aus main.c) =====
@@ -421,22 +446,55 @@ static esp_err_t handler_restart(httpd_req_t *req) {
 }
 
 // ===== GET /api/status =====
+// Liefert den Zustand, den das Gerät selbst kennt. Das Panel soll nichts davon
+// aus der Browser-Uhr ableiten müssen — die geht in einer anderen Zeitzone
+// oder bei RTC-Drift anders als die Uhr auf dem Display.
 static esp_err_t handler_status_get(httpd_req_t *req) {
     if (require_auth(req) != ESP_OK) return ESP_OK;
-    // Echte Werte: wifi = im STA-Modus verbunden (kein AP-Fallback),
+    // wifi = im STA-Modus verbunden (kein AP-Fallback),
     // ntp = gueltige Systemzeit vorhanden (tm_year >= 100 == ab Jahr 2000).
     bool wifi = !sbb_wifi_is_ap_mode();
     time_t now; struct tm ti;
     time(&now); localtime_r(&now, &ti);
     bool ntp = (ti.tm_year >= 100);
 
-    char body[40];
-    snprintf(body, sizeof(body), "{\"wifi\":%s,\"ntp\":%s}",
-             wifi ? "true" : "false", ntp ? "true" : "false");
+    char ip[16];
+    sbb_wifi_get_ip(ip, sizeof(ip));
+
+    cJSON *j = cJSON_CreateObject();
+    cJSON_AddBoolToObject(j, "wifi", wifi);
+    cJSON_AddBoolToObject(j, "ntp",  ntp);
+    cJSON_AddStringToObject(j, "ip", ip);
+    cJSON_AddNumberToObject(j, "rssi", sbb_wifi_get_rssi());
+    cJSON_AddNumberToObject(j, "heapKb", (double)(esp_get_free_heap_size() / 1024));
+    cJSON_AddNumberToObject(j, "uptimeS",
+        (double)(xTaskGetTickCount() / configTICK_RATE_HZ));
+
+    // Geraetezeit als HH:MM:SS — nur wenn sie ueberhaupt gueltig ist
+    if (ntp) {
+        char clk[9];
+        snprintf(clk, sizeof(clk), "%02d:%02d:%02d", ti.tm_hour, ti.tm_min, ti.tm_sec);
+        cJSON_AddStringToObject(j, "time", clk);
+        cJSON_AddNumberToObject(j, "weekday", ti.tm_wday);
+    }
+
+    cJSON_AddBoolToObject(j, "inWindow",   g_in_window);
+    cJSON_AddBoolToObject(j, "runForever", g_run_forever);
+    // Sekunden bis zum geplanten Schlafen; -1 = laeuft unbegrenzt/unbekannt
+    double until = -1;
+    if (!g_run_forever && g_active_end_time > 0 && ntp)
+        until = (double)(g_active_end_time > now ? g_active_end_time - now : 0);
+    cJSON_AddNumberToObject(j, "activeUntilS", until);
+
+    cJSON_AddStringToObject(j, "lastError", sbb_last_error());
+
+    char *body = cJSON_PrintUnformatted(j);
+    cJSON_Delete(j);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-    httpd_resp_sendstr(req, body);
+    httpd_resp_sendstr(req, body ? body : "{}");
+    free(body);
     return ESP_OK;
 }
 

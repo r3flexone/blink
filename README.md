@@ -48,7 +48,9 @@ idf.py build flash monitor   # Ctrl-] zum Beenden
 
 Wenn das Gerät aktiv ist (im Zeitfenster oder per Button geweckt), ist das Konfigurations-Panel unter **http://sbb-monitor.local** erreichbar.
 
-Das Panel zeigt oben rechts an ob der ESP gerade **Online** oder **schläft** — Einstellungen können nur bei Online-Status gespeichert werden.
+Das Panel zeigt oben rechts an ob der ESP gerade **Online** oder **schläft**. Speichern ist gesperrt, solange die Konfiguration nicht vom Gerät geladen werden konnte — sonst würden die Formular-Vorgaben die echten Einstellungen überschreiben. Sobald das Gerät antwortet, lädt das Panel automatisch nach und gibt den Button frei.
+
+Ein Punkt am Speichern-Button zeigt ungespeicherte Änderungen. Felder, die erst ein Neustart übernimmt (WLAN, GPIOs, I²C-Adresse), sind mit **Neustart nötig** markiert.
 
 Dort lassen sich einstellen:
 
@@ -64,7 +66,9 @@ Dort lassen sich einstellen:
 - **Hardware** — GPIO-Belegung für LED, OLED, Button
 - **OLED Invert** — periodisches Invertieren gegen Einbrennen
 
-Einstellungen werden in NVS gespeichert und überleben Neustarts und Deep Sleep.
+Die **Status-Seite** zeigt den Zustand, den das Gerät selbst meldet — Gerätezeit, ob ein Zeitfenster aktiv ist und wie lange noch, IP-Adresse und Signalstärke, Laufzeit und freier Speicher, die zuletzt geholten Abfahrten sowie den Grund eines fehlgeschlagenen Abrufs. Nichts davon wird aus der Browser-Uhr abgeleitet.
+
+Einstellungen werden in NVS gespeichert und überleben Neustarts und Deep Sleep. Die meisten greifen sofort — die Hauptschleife lädt die Konfiguration direkt nach dem Speichern neu. Änderungen an WLAN-Zugangsdaten, GPIO-Belegung und I²C-Adresse brauchen einen Neustart (Button oben rechts im Panel).
 
 ### secrets.h (Fallback)
 
@@ -74,11 +78,11 @@ Einstellungen werden in NVS gespeichert und überleben Neustarts und Deep Sleep.
 
 ### Aufwach- und Schlaf-Logik
 
-1. RTC-Zeit prüfen — falls keine gültige Zeit vorhanden, NTP-Sync via WiFi.
+1. RTC-Zeit prüfen — falls keine gültige Zeit vorhanden, NTP-Sync via WiFi. Die RTC läuft im Deep Sleep weiter, ein Aufwachen kostet also normalerweise keinen erneuten Kaltstart-Sync.
 2. Prüfen ob aktueller Zeitpunkt in einem aktiven Zeitfenster liegt.
-3. **Außerhalb des Fensters und `sleepEnabled = true`:** Deep Sleep bis zum nächsten Fensterstart (max. `sleepMaxMin` Minuten). Im Wochenend-Schlaf-Fenster (`weekendSleepEnabled = true`) wird direkt bis zum Ende des Wochenend-Fensters geschlafen.
-4. **`sleepEnabled = false`:** Gerät bleibt dauerhaft aktiv, der Fortschrittsbalken auf dem OLED bleibt voll. Sobald Sleep über das Web-Panel wieder aktiviert wird, startet ein frischer Timer (`buttonActiveMin` Minuten) ab dem Speicherzeitpunkt.
-5. **Im Fenster oder per Button geweckt:** Aktiv-Schleife bis Fensterende.
+3. **Außerhalb des Fensters und `sleepEnabled = true`:** Deep Sleep bis zum nächsten Fensterstart (max. `sleepMaxMin` Minuten). Im Wochenend-Schlaf-Fenster (`weekendSleepEnabled = true`) wird direkt bis zum Ende des Wochenend-Fensters geschlafen — dort greift das `sleepMaxMin`-Limit nicht. Ohne gültige Zeit: exakt `sleepFallbackS` Sekunden.
+4. **`sleepEnabled = false`:** Gerät bleibt dauerhaft aktiv — auch nach dem Ende eines Zeitfensters —, der Fortschrittsbalken auf dem OLED bleibt voll. Sobald Sleep über das Web-Panel wieder aktiviert wird, startet ein frischer Timer (`buttonActiveMin` Minuten) ab dem Speicherzeitpunkt.
+5. **Im Fenster oder per Button geweckt:** WLAN aufbauen, SNTP anstoßen (korrigiert die RTC-Drift), dann Aktiv-Schleife bis Fensterende bzw. bis zum Ablauf der Button-Zeit.
 6. **Button während aktivem Betrieb:** Sofortiger Deep Sleep.
 7. Nach dem Fenster: Deep Sleep für `sleepAfterS` Sekunden (Standard: 300 s = 5 min).
 
@@ -89,12 +93,15 @@ Einstellungen werden in NVS gespeichert und überleben Neustarts und Deep Sleep.
 | Kurzdruck (Wakeup) | `buttonActiveMin` Minuten aktiv (Standard: 10 min) |
 | Langdruck (Wakeup) | `buttonLongActiveMin` Minuten aktiv |
 | Druck während Betrieb | Sofort in Deep Sleep |
+| Druck im AP-Modus | Deep Sleep für `sleepFallbackS` Sekunden |
+
+Der Taster ist entprellt, und das Gerät wartet nach einem Wakeup auf das Loslassen, bevor die Aktiv-Schleife startet. Ein langer Druck legt das Gerät also nicht versehentlich sofort wieder schlafen.
 
 ### Aktiv-Schleife
 
 Pro Iteration:
 - Abfahrten von `transport.opendata.ch` abrufen (mit Retry).
-- Bei Fehler: gecachte Daten anzeigen, solange sie `< staleMaxMin` Minuten alt sind.
+- Bei Fehler: gecachte Daten anzeigen, solange sie `< staleMaxMin` Minuten alt sind — erkennbar am `!` vor dem Bahnhofnamen. Danach erscheint stattdessen „API FEHLER", nie wieder abgelaufene Daten ohne Marker.
 - NeoPixel: schlechtester Status der nächsten 4 gültigen, nicht-ausgefallenen Züge.
   - Grün = pünktlich · Cyan = leicht verspätet · Lila = stark verspätet · Rot = Ausfall
 - OLED: Abfahrtsliste mit Bahnhofname und Uhrzeit in der Kopfzeile.
@@ -105,13 +112,20 @@ Pro Iteration:
 
 Bis zu 4 Substring-Filter (case-insensitiv) auf Endstation und Zwischenhalte. Leer = alle Züge.
 
+### Robustheit
+
+- **Werte-Grenzen:** Alle Konfigurationswerte werden beim Laden aus NVS und vor jedem Speichern auf plausible Bereiche begrenzt. Weder ein alter NVS-Eintrag noch ein direkter Aufruf von `POST /api/config` (die API ist ungeschützt, sofern kein Panel-Login gesetzt ist) kann das Gerät damit lahmlegen.
+- **Fehlerdiagnose im Log:** Ein falsch geschriebener Bahnhofname erscheint als HTTP-Status (die API antwortet mit 404), nicht als Parse-Fehler. Zu große Antworten werden als solche gemeldet.
+- **Ungültige Hardware-Werte:** Eine unbrauchbare I²C-Adresse fällt auf `0x3C` zurück, ein fehlgeschlagener LED-Init führt nicht zum Boot-Loop.
+
 ## Projektstruktur
 
 ```
 main/
   main.c          — Hardware-Treiber und Hauptschleife
   sbb.c / sbb.h   — WiFi, HTTP, JSON-Parsing, Filter-Logik
-  http_server.c   — Web-Panel (SPIFFS + /api/config + /api/status)
+  http_server.c   — Web-Panel (SPIFFS + /api/config, /api/status,
+                    /api/departures, /api/restart)
   nvs_config.c    — Konfiguration in NVS lesen/schreiben
   cJSON.c         — Vendored JSON-Library
   spiffs/

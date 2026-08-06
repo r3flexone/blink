@@ -13,6 +13,18 @@ extern SbbDeparture g_last_deps[4];
 extern time_t g_last_deps_time;
 
 /**
+ * Laufzeit-Status der Aktiv-Schleife, ebenfalls von main.c geschrieben und
+ * von GET /api/status gelesen. Damit zeigt das Panel den echten Zustand des
+ * Geräts statt ihn aus der Browser-Uhr zu erraten.
+ *   g_in_window       — das Aufwachen lag in einem konfigurierten Zeitfenster
+ *   g_run_forever     — Aktiv-Schleife ohne Zeitlimit (sleepEnabled = false)
+ *   g_active_end_time — Wanduhr-Zeitpunkt des geplanten Schlafens (0 = unbekannt)
+ */
+extern volatile bool g_in_window;
+extern volatile bool g_run_forever;
+extern time_t        g_active_end_time;
+
+/**
  * Startet den HTTP-Server.
  * Aufrufen NACH sbb_wifi_init() und NTP-Sync.
  */
