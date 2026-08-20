@@ -60,7 +60,7 @@ Dort lassen sich einstellen:
 - **Schlaf** — Deep-Sleep ein/aus, Fallback-Dauer, Max-Schlafdauer, Schlaf nach Fenster
 - **Wochenend-Schlaf** — eigener, unabhängig schaltbarer Schlaf-Zeitraum (z. B. Fr 18:00 → Mo 05:00)
 - **Nur Wochentage** — Sa/So kein normales Zeitfenster aktiv
-- **LED-Farben** — RGB-Farben für alle Zustände (pünktlich, verspätet, Ausfall, Laden)
+- **LED-Farben** — RGB-Farben für alle Zustände (pünktlich, verspätet, Ausfall, Laden) und die Helligkeit
 - **Verspätungs-Schwellen** — ab wann Cyan bzw. Lila
 - **API & Refresh-Intervalle** — adaptiver Refresh, Retry, Cache-Gültigkeit
 - **Hardware** — GPIO-Belegung für LED, OLED, Button
@@ -114,7 +114,8 @@ Bis zu 4 Substring-Filter (case-insensitiv) auf Endstation und Zwischenhalte. Le
 
 ### Robustheit
 
-- **Werte-Grenzen:** Alle Konfigurationswerte werden beim Laden aus NVS und vor jedem Speichern auf plausible Bereiche begrenzt. Weder ein alter NVS-Eintrag noch ein direkter Aufruf von `POST /api/config` (die API ist ungeschützt, sofern kein Panel-Login gesetzt ist) kann das Gerät damit lahmlegen.
+- **Werte-Grenzen:** Alle Konfigurationswerte werden beim Laden aus NVS und vor jedem Speichern auf plausible Bereiche begrenzt. Weder ein alter NVS-Eintrag noch ein direkter Aufruf von `POST /api/config` kann das Gerät damit lahmlegen.
+- **Schreibzugriff nur von der eigenen Seite:** Da das Panel-Passwort standardmäßig leer ist, verlangen `POST /api/config` und `POST /api/restart` einen `Content-Type: application/json` und einen `Origin`, der zum Gerät passt. Ohne das könnte jede beliebige Webseite, die im selben Netz geöffnet wird, die Konfiguration überschreiben. Aufrufe ohne `Origin` (curl, eigene Skripte) bleiben erlaubt.
 - **Fehlerdiagnose im Log:** Ein falsch geschriebener Bahnhofname erscheint als HTTP-Status (die API antwortet mit 404), nicht als Parse-Fehler. Zu große Antworten werden als solche gemeldet.
 - **Ungültige Hardware-Werte:** Eine unbrauchbare I²C-Adresse fällt auf `0x3C` zurück, ein fehlgeschlagener LED-Init führt nicht zum Boot-Loop.
 
@@ -122,16 +123,43 @@ Bis zu 4 Substring-Filter (case-insensitiv) auf Endstation und Zwischenhalte. Le
 
 ```
 main/
-  main.c          — Hardware-Treiber und Hauptschleife
-  sbb.c / sbb.h   — WiFi, HTTP, JSON-Parsing, Filter-Logik
-  http_server.c   — Web-Panel (SPIFFS + /api/config, /api/status,
-                    /api/departures, /api/restart)
-  nvs_config.c    — Konfiguration in NVS lesen/schreiben
-  cJSON.c         — Vendored JSON-Library
+  main.c            — Aufwach-/Schlaf-Ablauf, Hauptschleife, WiFi/NTP
+  display.c/.h      — SSD1306-Treiber, Font, fertige Bildschirme
+  led.c/.h          — WS2812: Statusfarbe, Helligkeit
+  button.c/.h       — Entprellung, Halte-Messung
+  sbb.c / sbb.h     — WiFi, HTTP, JSON-Parsing, Filter-Logik
+  http_server.c     — Web-Panel (SPIFFS + /api/config, /api/status,
+                      /api/departures, /api/restart) und Laufzeitstatus
+  nvs_config.c      — Konfiguration in NVS lesen/schreiben
+  config_fields.def — Tabelle aller Konfigurationsfelder (Default,
+                      Wertebereich, NVS-Key, JSON-Key)
+  cJSON.c           — Vendored JSON-Library
   spiffs/
-    index.html    — Web-Panel UI (wird auf SPIFFS geflasht)
+    index.html      — Web-Panel UI (wird auf SPIFFS geflasht)
   secrets.h.example
+
+test/
+  native/           — Firmware-Tests ohne ESP-IDF (gcc + python3)
+  panel/            — Web-Panel-Tests (Playwright, ohne Hardware)
 ```
+
+Eine neue Einstellung braucht zwei Zeilen in der Firmware: das Feld in
+`blink_config_t` und einen Eintrag in `config_fields.def`. Defaults,
+Wertebereiche, NVS-Zugriff und beide HTTP-Handler sind Schleifen über diese
+Tabelle.
+
+## Tests
+
+Beide Suiten laufen ohne Hardware:
+
+```
+./test/native/run.sh                  # Syntax, nativer Link, Config-Tabelle
+node test/panel/panel.test.js         # Web-Panel
+node test/panel/roundtrip.test.js
+```
+
+Details in `test/native/README.md` und `test/panel/README.md`. Sie ersetzen
+weder `idf.py build` noch einen Test auf dem Gerät.
 
 ## Build-System
 
