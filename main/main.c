@@ -4,12 +4,13 @@
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/i2c_master.h"
-#include "led_strip.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
 #include "esp_sntp.h"
 #include "sbb.h"
+#include "display.h"
+#include "led.h"
+#include "button.h"
 #include "secrets.h"
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
@@ -35,11 +36,6 @@ volatile bool g_in_window = false;
 volatile bool g_run_forever = false;
 time_t g_active_end_time = 0;
 
-#define OLED_WIDTH  128
-#define OLED_HEIGHT  64
-// Der 5x7-Font belegt inkl. Spalte Abstand 6 px pro Zeichen.
-#define OLED_COLS   (OLED_WIDTH / 6)
-
 // pdMS_TO_TICKS() rechnet intern in 32 Bit (ms * configTICK_RATE_HZ) und
 // läuft ab ca. 11.9 h über — ein Zeitfenster von 23 h oder ein OLED-Invert-
 // Intervall von 1440 min ergäbe sonst eine viel zu kurze Dauer. Deshalb
@@ -54,340 +50,6 @@ static TickType_t seconds_to_ticks(uint32_t seconds) {
     return (TickType_t)seconds * configTICK_RATE_HZ;
 }
 
-// ===== NEOPIXEL =====
-static led_strip_handle_t led_strip;
-static bool led_ok = false;
-static void led_init(void) {
-    led_strip_config_t s = { .strip_gpio_num = cfg.ledGpio, .max_leds = 1 };
-    led_strip_rmt_config_t r = { .resolution_hz = 10*1000*1000, .flags.with_dma = false };
-    // Kein ESP_ERROR_CHECK: ein ungültiger ledGpio aus der NVS-Config würde
-    // sonst einen Panic-Boot-Loop erzeugen, der nur per Flash-Erase endet.
-    esp_err_t err = led_strip_new_rmt_device(&s, &r, &led_strip);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "LED init fehlgeschlagen (GPIO %d): %s",
-                 cfg.ledGpio, esp_err_to_name(err));
-        return;
-    }
-    led_ok = true;
-    led_strip_clear(led_strip);
-}
-// Helligkeit skalieren statt fest durch 16 zu teilen. Vorher landeten von den
-// 24 Bit des Farbwaehlers im Panel nur 4 Bit pro Kanal auf der LED: #0F0F0F war
-// aus, und #101010 bis #1F1F1F waren nicht zu unterscheiden. Der Default von
-// ledBrightness = 16 entspricht genau der bisherigen Helligkeit.
-static void led_set(uint8_t r, uint8_t g, uint8_t b) {
-    if (!led_ok) return;
-    uint32_t bright = (uint32_t)cfg.ledBrightness;
-    led_strip_set_pixel(led_strip, 0,
-                        (uint32_t)r * bright / 255,
-                        (uint32_t)g * bright / 255,
-                        (uint32_t)b * bright / 255);
-    led_strip_refresh(led_strip);
-}
-// Schlimmster Status aller gültigen Züge: Ausfall > grosse > kleine Verspätung > OK
-static void led_show_worst_status(const SbbDeparture deps[DEP_COUNT]) {
-    int worst = 0;
-    for (int i = 0; i < DEP_COUNT; i++) {
-        if (!deps[i].valid) continue;
-        int s = 0;
-        if (deps[i].cancelled)                       s = 3;
-        else if (deps[i].delay >= cfg.delayBigMin)   s = 2;
-        else if (deps[i].delay >= cfg.delaySmallMin) s = 1;
-        if (s > worst) worst = s;
-    }
-    switch (worst) {
-        case 3:  led_set(cfg.ledCancelledRgb[0],  cfg.ledCancelledRgb[1],  cfg.ledCancelledRgb[2]);  break;
-        case 2:  led_set(cfg.ledDelayBigRgb[0],   cfg.ledDelayBigRgb[1],   cfg.ledDelayBigRgb[2]);   break;
-        case 1:  led_set(cfg.ledDelaySmallRgb[0], cfg.ledDelaySmallRgb[1], cfg.ledDelaySmallRgb[2]); break;
-        default: led_set(cfg.ledOkRgb[0],         cfg.ledOkRgb[1],         cfg.ledOkRgb[2]);         break;
-    }
-}
-
-// ===== OLED =====
-static i2c_master_dev_handle_t oled_dev;
-static uint8_t framebuffer[OLED_WIDTH * OLED_HEIGHT / 8];
-static bool oled_ok = false;
-
-static void oled_cmd(uint8_t cmd) {
-    if (!oled_dev) return;   // OLED-Init fehlgeschlagen oder noch nicht erfolgt
-    uint8_t buf[2] = {0x00, cmd};
-    i2c_master_transmit(oled_dev, buf, 2, 100);
-}
-static void oled_flush(void) {
-    if (!oled_ok) return;
-    oled_cmd(0x21); oled_cmd(0); oled_cmd(127);
-    oled_cmd(0x22); oled_cmd(0); oled_cmd(7);
-    uint8_t buf[OLED_WIDTH + 1];
-    for (int p = 0; p < 8; p++) {
-        buf[0] = 0x40;
-        memcpy(&buf[1], &framebuffer[p * OLED_WIDTH], OLED_WIDTH);
-        i2c_master_transmit(oled_dev, buf, sizeof(buf), 100);
-    }
-}
-static void oled_init_display(void) {
-    // Tippfehler im Panel ("3G", "abc") darf nicht in einer unbrauchbaren
-    // I2C-Adresse enden — ausserhalb des gültigen 7-Bit-Bereichs: Default.
-    int oled_addr = (int)strtol(cfg.oledAddr, NULL, 16);
-    if (oled_addr < 0x08 || oled_addr > 0x77) {
-        ESP_LOGW(TAG, "OLED-Adresse '%s' ungueltig, nutze 0x3C", cfg.oledAddr);
-        oled_addr = 0x3C;
-    }
-    i2c_master_bus_config_t bc = {
-        .clk_source = I2C_CLK_SRC_DEFAULT, .i2c_port = I2C_NUM_0,
-        .scl_io_num = cfg.sclGpio, .sda_io_num = cfg.sdaGpio,
-        .glitch_ignore_cnt = 7, .flags.enable_internal_pullup = true,
-    };
-    i2c_master_bus_handle_t bus;
-    if (i2c_new_master_bus(&bc, &bus) != ESP_OK) return;
-    i2c_device_config_t dc = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = (uint16_t)oled_addr, .scl_speed_hz = 100000,
-    };
-    if (i2c_master_bus_add_device(bus, &dc, &oled_dev) != ESP_OK) {
-        oled_dev = NULL;
-        i2c_del_master_bus(bus);   // sonst bleibt der I2C-Port belegt
-        return;
-    }
-    oled_cmd(0xAE); oled_cmd(0xD5); oled_cmd(0x80);
-    oled_cmd(0xA8); oled_cmd(0x3F); oled_cmd(0xD3); oled_cmd(0x00);
-    oled_cmd(0x40); oled_cmd(0x8D); oled_cmd(0x14);
-    oled_cmd(0x20); oled_cmd(0x00); oled_cmd(0xA1); oled_cmd(0xC8);
-    oled_cmd(0xDA); oled_cmd(0x12); oled_cmd(0x81); oled_cmd(0xCF);
-    oled_cmd(0xD9); oled_cmd(0xF1); oled_cmd(0xDB); oled_cmd(0x40);
-    oled_cmd(0xA4); oled_cmd(0xA6); oled_cmd(0xAF);
-    oled_ok = true;
-    memset(framebuffer, 0, sizeof(framebuffer));
-    oled_flush();
-}
-static void draw_pixel(int x, int y, bool on) {
-    if (x<0||x>=OLED_WIDTH||y<0||y>=OLED_HEIGHT) return;
-    if (on) framebuffer[x+(y/8)*OLED_WIDTH] |=  (1<<(y%8));
-    else    framebuffer[x+(y/8)*OLED_WIDTH] &= ~(1<<(y%8));
-}
-
-// ===== FONT =====
-static const uint8_t font5x7[][5] = {
-    {0x00,0x00,0x00,0x00,0x00},{0x00,0x00,0x5F,0x00,0x00},{0x00,0x07,0x00,0x07,0x00},
-    {0x14,0x7F,0x14,0x7F,0x14},{0x24,0x2A,0x7F,0x2A,0x12},{0x23,0x13,0x08,0x64,0x62},
-    {0x36,0x49,0x55,0x22,0x50},{0x00,0x05,0x03,0x00,0x00},{0x00,0x1C,0x22,0x41,0x00},
-    {0x00,0x41,0x22,0x1C,0x00},{0x08,0x2A,0x1C,0x2A,0x08},{0x08,0x08,0x3E,0x08,0x08},
-    {0x00,0x50,0x30,0x00,0x00},{0x08,0x08,0x08,0x08,0x08},{0x00,0x60,0x60,0x00,0x00},
-    {0x20,0x10,0x08,0x04,0x02},{0x3E,0x51,0x49,0x45,0x3E},{0x00,0x42,0x7F,0x40,0x00},
-    {0x42,0x61,0x51,0x49,0x46},{0x21,0x41,0x45,0x4B,0x31},{0x18,0x14,0x12,0x7F,0x10},
-    {0x27,0x45,0x45,0x45,0x39},{0x3C,0x4A,0x49,0x49,0x30},{0x01,0x71,0x09,0x05,0x03},
-    {0x36,0x49,0x49,0x49,0x36},{0x06,0x49,0x49,0x29,0x1E},{0x00,0x36,0x36,0x00,0x00},
-    {0x00,0x56,0x36,0x00,0x00},{0x08,0x14,0x22,0x41,0x00},{0x14,0x14,0x14,0x14,0x14},
-    {0x00,0x41,0x22,0x14,0x08},{0x02,0x01,0x51,0x09,0x06},{0x32,0x49,0x79,0x41,0x3E},
-    {0x7E,0x11,0x11,0x11,0x7E},{0x7F,0x49,0x49,0x49,0x36},{0x3E,0x41,0x41,0x41,0x22},
-    {0x7F,0x41,0x41,0x22,0x1C},{0x7F,0x49,0x49,0x49,0x41},{0x7F,0x09,0x09,0x09,0x01},
-    {0x3E,0x41,0x49,0x49,0x7A},{0x7F,0x08,0x08,0x08,0x7F},{0x00,0x41,0x7F,0x41,0x00},
-    {0x20,0x40,0x41,0x3F,0x01},{0x7F,0x08,0x14,0x22,0x41},{0x7F,0x40,0x40,0x40,0x40},
-    {0x7F,0x02,0x0C,0x02,0x7F},{0x7F,0x04,0x08,0x10,0x7F},{0x3E,0x41,0x41,0x41,0x3E},
-    {0x7F,0x09,0x09,0x09,0x06},{0x3E,0x41,0x51,0x21,0x5E},{0x7F,0x09,0x19,0x29,0x46},
-    {0x46,0x49,0x49,0x49,0x31},{0x01,0x01,0x7F,0x01,0x01},{0x3F,0x40,0x40,0x40,0x3F},
-    {0x1F,0x20,0x40,0x20,0x1F},{0x3F,0x40,0x38,0x40,0x3F},{0x63,0x14,0x08,0x14,0x63},
-    {0x07,0x08,0x70,0x08,0x07},{0x61,0x51,0x49,0x45,0x43},
-};
-static const uint8_t font_umlaut[][5] = {
-    {0x7D,0x12,0x11,0x12,0x7D},{0x3D,0x42,0x41,0x42,0x3D},{0x3E,0x41,0x40,0x41,0x3E},
-    {0x22,0x54,0x54,0x54,0x78},{0x38,0x45,0x44,0x45,0x38},{0x3C,0x41,0x40,0x41,0x7C},
-};
-static void draw_glyph(int x, int y, const uint8_t *g) {
-    for (int c = 0; c < 5; c++)
-        for (int r = 0; r < 7; r++)
-            draw_pixel(x+c, y+r, (g[c]>>r) & 1);
-}
-static int draw_char_utf8(int x, int y, const unsigned char *s, int *consumed) {
-    *consumed = 1;
-    unsigned char c = s[0];
-    if (c == 0xC3 && s[1] != 0) {
-        *consumed = 2;
-        unsigned char b = s[1];
-        switch (b) {
-            case 0x84: draw_glyph(x,y,font_umlaut[0]); return x+6;
-            case 0x96: draw_glyph(x,y,font_umlaut[1]); return x+6;
-            case 0x9C: draw_glyph(x,y,font_umlaut[2]); return x+6;
-            case 0xA4: draw_glyph(x,y,font_umlaut[3]); return x+6;
-            case 0xB6: draw_glyph(x,y,font_umlaut[4]); return x+6;
-            case 0xBC: draw_glyph(x,y,font_umlaut[5]); return x+6;
-        }
-        char base = 0;
-        if      ((b >= 0x80 && b <= 0x85) || (b >= 0xA0 && b <= 0xA5)) base = 'A';
-        else if (b == 0x87 || b == 0xA7)                               base = 'C';
-        else if ((b >= 0x88 && b <= 0x8B) || (b >= 0xA8 && b <= 0xAB)) base = 'E';
-        else if ((b >= 0x8C && b <= 0x8F) || (b >= 0xAC && b <= 0xAF)) base = 'I';
-        else if (b == 0x91 || b == 0xB1)                               base = 'N';
-        else if ((b >= 0x92 && b <= 0x98) || (b >= 0xB2 && b <= 0xB8)) base = 'O';
-        else if ((b >= 0x99 && b <= 0x9B) || (b >= 0xB9 && b <= 0xBB)) base = 'U';
-        else if (b == 0x9D || b == 0xBD)                               base = 'Y';
-        if (base) {
-            draw_glyph(x, y, font5x7[base - 0x20]);
-            return x + 6;
-        }
-        *consumed = 1;
-    }
-    // Folgebytes einer nicht unterstützten UTF-8-Sequenz (z.B. 3-Byte-Zeichen)
-    // überspringen, ohne zu zeichnen — sonst frisst ein einzelnes Zeichen
-    // mehrere Leerstellen auf der Zeile.
-    if (c >= 0x80 && c <= 0xBF) return x;
-    char ch = (char)c;
-    if (ch >= 'a' && ch <= 'z') ch -= 32;
-    if (ch >= 32 && ch <= 90) { draw_glyph(x,y,font5x7[ch-32]); return x+6; }
-    return x + 6;
-}
-// Kopiert hoechstens max_glyphs darstellbare Zeichen aus src nach dst.
-// snprintf("%.Ns") zaehlt Bytes: "Delemont" mit Akzent belegt 9 Bytes, aber nur
-// 8 Zellen — die Zeile wurde damit mal zu kurz, mal (mit Gleis-Suffix) breiter
-// als die 128 px des Displays. draw_char_utf8() rendert jede UTF-8-Sequenz als
-// genau eine 6-px-Zelle, also wird hier genauso gezaehlt.
-static void copy_glyphs(char *dst, size_t dst_size, const char *src, int max_glyphs) {
-    size_t o = 0;
-    int glyphs = 0;
-    for (size_t i = 0; src[i] && glyphs < max_glyphs; ) {
-        unsigned char c = (unsigned char)src[i];
-        size_t seq = 1;
-        if      ((c & 0xE0) == 0xC0) seq = 2;
-        else if ((c & 0xF0) == 0xE0) seq = 3;
-        else if ((c & 0xF8) == 0xF0) seq = 4;
-        // Am Stringende abgeschnittene Sequenz nicht halb uebernehmen
-        for (size_t k = 1; k < seq; k++) if (!src[i + k]) { seq = 1; break; }
-        if (o + seq >= dst_size) break;
-        memcpy(dst + o, src + i, seq);
-        o += seq; i += seq; glyphs++;
-    }
-    dst[o] = 0;
-}
-
-static void draw_text(int x, int y, const char *text) {
-    const unsigned char *s = (const unsigned char *)text;
-    while (*s) {
-        int consumed = 1;
-        x = draw_char_utf8(x, y, s, &consumed);
-        s += consumed;
-    }
-}
-static void draw_header(const char *title, bool stale) {
-    memset(framebuffer, 0, sizeof(framebuffer));
-    char hdr[20];
-    if (stale) snprintf(hdr, sizeof(hdr), "!%.14s", title);
-    else       snprintf(hdr, sizeof(hdr), "%.15s", title);
-    draw_text(0, 0, hdr);
-    time_t now; struct tm ti;
-    time(&now); localtime_r(&now, &ti);
-    if (ti.tm_year >= 100) {
-        char clk[6];
-        snprintf(clk, sizeof(clk), "%02d:%02d", ti.tm_hour, ti.tm_min);
-        draw_text(128 - 5*6, 0, clk);
-    }
-    for (int x = 0; x < 128; x++) draw_pixel(x, 9, true);
-}
-
-// Textzeile y invertieren (Ausfall-Markierung)
-static void invert_row(int y) {
-    for (int px = 0; px < OLED_WIDTH; px++)
-        for (int py = y; py < y + 8; py++) {
-            bool cur = (framebuffer[px + (py/8)*OLED_WIDTH] >> (py%8)) & 1;
-            draw_pixel(px, py, !cur);
-        }
-}
-
-static void display_departures(SbbDeparture deps[DEP_COUNT], bool stale) {
-    draw_header(cfg.station, stale);
-    static const int yp[DEP_COUNT] = {14, 27, 40, 53};
-    for (int i = 0; i < DEP_COUNT; i++) {
-        if (!deps[i].valid) continue;
-        int y = yp[i];
-        char line[64];
-
-        if (deps[i].cancelled) {
-            snprintf(line, sizeof(line), "%s AUSFALL", deps[i].time);
-            draw_text(0, y, line);
-            invert_row(y);
-            continue;
-        }
-
-        // Prefix "HH:MM" bzw. "HH:MM+7", Suffix " G12" — beides reines ASCII,
-        // also ist strlen() hier zugleich die Zellenzahl. Was davon uebrig
-        // bleibt, bekommt das Ziel; frueher standen feste %.Ns-Grenzen da, die
-        // zusammen mit dem Gleis-Suffix ueber die 21 Zellen hinausliefen und
-        // die letzte Gleisziffer abschnitten.
-        char prefix[12], suffix[8] = "";
-        if (deps[i].delay > 0) {
-            int dly = deps[i].delay > 99 ? 99 : deps[i].delay;
-            snprintf(prefix, sizeof(prefix), "%s+%d", deps[i].time, dly);
-        } else {
-            snprintf(prefix, sizeof(prefix), "%s", deps[i].time);
-        }
-        if (deps[i].platform[0])
-            snprintf(suffix, sizeof(suffix), " G%.2s", deps[i].platform);
-
-        int budget = OLED_COLS - (int)strlen(prefix) - 1 - (int)strlen(suffix);
-        char dest[sizeof(deps[i].destination)];
-        copy_glyphs(dest, sizeof(dest), deps[i].destination, budget > 0 ? budget : 0);
-        snprintf(line, sizeof(line), "%s %s%s", prefix, dest, suffix);
-        draw_text(0, y, line);
-    }
-    oled_flush();
-}
-
-static void display_error(void) {
-    draw_header(cfg.station, false);
-    draw_text(0, 20, "API FEHLER");
-    draw_text(0, 32, "PRUEFE NETZ...");
-    oled_flush();
-}
-
-// ===== BUTTON =====
-// Entprellt: ein einzelner Störimpuls auf GPIO 0 soll das Gerät nicht schlafen legen.
-static bool button_pressed(void) {
-    if (gpio_get_level(cfg.buttonGpio) != 0) return false;
-    vTaskDelay(pdMS_TO_TICKS(30));
-    return gpio_get_level(cfg.buttonGpio) == 0;
-}
-
-// Wartet (begrenzt) bis der Taster losgelassen ist.
-static void wait_button_release(int timeout_ms) {
-    int waited = 0;
-    while (gpio_get_level(cfg.buttonGpio) == 0 && waited < timeout_ms) {
-        vTaskDelay(pdMS_TO_TICKS(20));
-        waited += 20;
-    }
-}
-
-// ===== COUNTDOWN BAR =====
-static void draw_countdown_bar(TickType_t active_start, TickType_t active_end) {
-    TickType_t now = xTaskGetTickCount();
-    int total = (int)(active_end - active_start);
-    int remaining = (int)(active_end - now);
-    if (remaining < 0) remaining = 0;
-    if (total <= 0) return;
-    int bar_w = (remaining * OLED_WIDTH) / total;
-    for (int x = 0; x < OLED_WIDTH; x++) {
-        if (x < bar_w)
-            framebuffer[x + 7 * OLED_WIDTH] |= 0xC0;
-        else
-            framebuffer[x + 7 * OLED_WIDTH] &= ~0xC0;
-    }
-}
-
-static void flush_page7(void) {
-    if (!oled_ok) return;
-    oled_cmd(0x21); oled_cmd(0); oled_cmd(127);
-    oled_cmd(0x22); oled_cmd(7); oled_cmd(7);
-    uint8_t buf[OLED_WIDTH + 1];
-    buf[0] = 0x40;
-    memcpy(&buf[1], &framebuffer[7 * OLED_WIDTH], OLED_WIDTH);
-    i2c_master_transmit(oled_dev, buf, sizeof(buf), 100);
-}
-
-// Countdown-Balken aktualisieren und nur Page 7 flushen.
-// Bei run_forever bleibt der Balken voll (total=1, remaining=1).
-static void redraw_bar(bool run_forever, TickType_t active_start, TickType_t active_end) {
-    TickType_t t = xTaskGetTickCount();
-    draw_countdown_bar(run_forever ? t : active_start, run_forever ? t + 1 : active_end);
-    flush_page7();
-}
-
 // Restlaufzeit als Wanduhr-Zeitpunkt spiegeln, damit GET /api/status sagen
 // kann, bis wann das Gerät wach bleibt — Ticks nützen dem Panel nichts.
 static void publish_active_end(TickType_t end) {
@@ -400,10 +62,9 @@ static void publish_active_end(TickType_t end) {
 
 // ===== SLEEP =====
 static void go_to_sleep(uint64_t us) {
-    memset(framebuffer, 0, sizeof(framebuffer));
-    oled_flush();
-    if (oled_ok) oled_cmd(0xAE);
-    if (led_ok) { led_strip_clear(led_strip); led_strip_refresh(led_strip); }
+    display_clear();
+    display_off();
+    led_off();
     vTaskDelay(pdMS_TO_TICKS(100));
     esp_sleep_enable_timer_wakeup(us);
     // Interner Pullup gilt im Deep Sleep nur über die RTC-Domain — ohne
@@ -438,7 +99,7 @@ static void wifi_reconnect_interruptible(bool *force_sleep) {
         if (sbb_wifi_wait_connected(1000)) return;
         if (button_pressed()) {
             ESP_LOGI(TAG, "Button während Reconnect → Schlaf");
-            wait_button_release(5000);
+            button_wait_release(5000);
             *force_sleep = true;
             return;
         }
@@ -474,41 +135,6 @@ static void log_board_info(void) {
              ci.revision / 100, ci.revision % 100, ci.cores);
     ESP_LOGI(TAG, "Heap frei: %lu KB",
              (unsigned long)(esp_get_free_heap_size() / 1024));
-}
-
-// ===== SCHLAF-INFO =====
-static const char *WEEKDAY_ABBR[7] = {"SO","MO","DI","MI","DO","FR","SA"};
-
-static void show_sleep_info(int sleep_min) {
-    if (!oled_ok) return;
-    draw_header("SCHLAFE", false);
-
-    time_t now; struct tm nt;
-    time(&now); localtime_r(&now, &nt);
-    char info[24];
-    // Ohne gueltige RTC-Zeit waere jede "BIS HH:MM"-Angabe frei erfunden
-    // (sie kaeme aus dem Epoch-Startwert) — dann nur die Dauer zeigen.
-    if (nt.tm_year >= 100) {
-        time_t wake = now + (time_t)sleep_min * 60;
-        struct tm wt; localtime_r(&wake, &wt);
-        // Wochentag dazu, sobald der Schlaf ueber Mitternacht reicht: beim
-        // Wochenend-Schlaf sagte "BIS 05:00" sonst nicht, welcher Tag gemeint war.
-        if (wt.tm_wday == nt.tm_wday && sleep_min < 24 * 60)
-            snprintf(info, sizeof(info), "BIS %02d:%02d", wt.tm_hour, wt.tm_min);
-        else
-            snprintf(info, sizeof(info), "BIS %s %02d:%02d",
-                     WEEKDAY_ABBR[wt.tm_wday], wt.tm_hour, wt.tm_min);
-        draw_text(0, 20, info);
-    }
-
-    if (sleep_min >= 60) {
-        snprintf(info, sizeof(info), "(%dH %dMIN)", sleep_min / 60, sleep_min % 60);
-    } else {
-        snprintf(info, sizeof(info), "(%d MIN)", sleep_min);
-    }
-    draw_text(0, 32, info);
-    oled_flush();
-    vTaskDelay(pdMS_TO_TICKS(2000));
 }
 
 // ===== ZEITFENSTER =====
@@ -609,30 +235,18 @@ void app_main(void) {
     esp_sleep_wakeup_cause_t wakeup = esp_sleep_get_wakeup_cause();
     bool woken_by_button = (wakeup == ESP_SLEEP_WAKEUP_EXT1);
 
-    led_init();
-    oled_init_display();
+    led_init(&cfg);
+    display_init(&cfg);
+    button_init(&cfg);
 
     if (wakeup == 0) {
         log_board_info();
         check_window_overlaps();
     }
 
-    // Button-GPIO immer konfigurieren (für Halt-Erkennung und Sleep-Taste)
-    gpio_config_t btn = {
-        .pin_bit_mask = 1ULL << cfg.buttonGpio,
-        .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-    };
-    gpio_config(&btn);
-
     int button_active_min = cfg.buttonActiveMin;
     if (woken_by_button) {
-        int hold_ms = 0;
-        while (gpio_get_level(cfg.buttonGpio) == 0 &&
-               hold_ms < cfg.buttonLongPressMs + 1000) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-            hold_ms += 50;
-        }
+        int hold_ms = button_measure_hold(cfg.buttonLongPressMs + 1000);
         if (hold_ms >= cfg.buttonLongPressMs) {
             button_active_min = cfg.buttonLongActiveMin;
         }
@@ -640,7 +254,7 @@ void app_main(void) {
         // Die Messschleife bricht nach buttonLongPressMs + 1 s ab. Wird der
         // Taster länger gehalten, sähe die Aktiv-Schleife ihn sofort als
         // "Sleep"-Druck und das Gerät schliefe direkt wieder ein.
-        wait_button_release(10000);
+        button_wait_release(10000);
     }
 
     setenv("TZ", "CET-1CEST,M3.5.0,M10.5.0/3", 1);
@@ -653,13 +267,9 @@ void app_main(void) {
     bool ntp_tried = false;
 
     if (!time_valid) {
-        if (oled_ok) {
-            oled_cmd(0xAF);
-            draw_header("KALTSTART", false);
-            draw_text(0, 20, "WIFI+NTP...");
-            oled_flush();
-        }
-        led_set(cfg.ledLoadingRgb[0], cfg.ledLoadingRgb[1], cfg.ledLoadingRgb[2]);
+        display_on();
+        display_message("KALTSTART", "WIFI+NTP...", NULL, NULL);
+        led_set_rgb(cfg.ledLoadingRgb);
         wifi_connect_from_cfg();
         wifi_started = true;
         ap_mode = sbb_wifi_is_ap_mode();
@@ -705,7 +315,7 @@ void app_main(void) {
             sleep_us = (uint64_t)cfg.sleepFallbackS * 1000000ULL;
             d = (cfg.sleepFallbackS + 59) / 60;
         }
-        show_sleep_info(d);
+        display_sleep_info(d);
         go_to_sleep(sleep_us);
         return;
     }
@@ -713,13 +323,9 @@ void app_main(void) {
     if (woken_by_button) ESP_LOGI(TAG, "Button aktiv (%d Min)", button_active_min);
     else                 ESP_LOGI(TAG, "Zeitfenster aktiv");
 
-    if (oled_ok) {
-        oled_cmd(0xAF);
-        draw_header(cfg.station, false);
-        draw_text(0, 20, "LADE ZUEGE...");
-        oled_flush();
-    }
-    led_set(cfg.ledLoadingRgb[0], cfg.ledLoadingRgb[1], cfg.ledLoadingRgb[2]);
+    display_on();
+    display_message(cfg.station, "LADE ZUEGE...", NULL, NULL);
+    led_set_rgb(cfg.ledLoadingRgb);
 
     // WiFi in jedem Fall aufbauen, wenn es die Kaltstart-Phase nicht schon tat.
     // Früher hing das an "wakeup != 0": nach einem esp_restart (Panel-Neustart)
@@ -746,14 +352,9 @@ void app_main(void) {
     http_server_start();
 
     if (ap_mode) {
-        if (oled_ok) {
-            draw_header("KEIN WLAN", false);
-            draw_text(0, 20, "SSID: SBB-MONITOR");
-            draw_text(0, 32, "192.168.4.1");
-            draw_text(0, 44, "WLAN EINRICHTEN");
-            oled_flush();
-        }
-        led_set(cfg.ledLoadingRgb[0], cfg.ledLoadingRgb[1], cfg.ledLoadingRgb[2]);
+        display_message("KEIN WLAN", "SSID: SBB-MONITOR", "192.168.4.1",
+                        "WLAN EINRICHTEN");
+        led_set_rgb(cfg.ledLoadingRgb);
         while (!g_cfg_dirty) {
             // Button im AP-Modus: sleepFallbackS schlafen statt fixer 30 s —
             // ein kurzer Zyklus würde sonst nur AP→Sleep→AP im Minutentakt kosten.
@@ -823,7 +424,7 @@ void app_main(void) {
             // Invert-Intervall neu ansetzen; bei 0 (aus) sofort zurückschalten,
             // sonst bliebe das Display bis zum Schlafen invertiert.
             if (cfg.oledInvertMin <= 0 && inverted) {
-                oled_cmd(0xA6);
+                display_set_inverted(false);
                 inverted = false;
             }
             next_invert = xTaskGetTickCount() +
@@ -865,7 +466,7 @@ void app_main(void) {
         if (success) {
             led_show_worst_status(deps);
         } else {
-            led_set(cfg.ledCancelledRgb[0], cfg.ledCancelledRgb[1], cfg.ledCancelledRgb[2]);
+            led_set_rgb(cfg.ledCancelledRgb);
         }
 
         // Display
@@ -874,7 +475,7 @@ void app_main(void) {
         } else {
             display_error();
         }
-        redraw_bar(run_forever, active_start, active_end);
+        display_countdown_bar(run_forever, active_start, active_end);
 
         // Adaptiver Refresh
         int refresh_sec;
@@ -915,13 +516,13 @@ void app_main(void) {
             TickType_t t = xTaskGetTickCount();
             if (!success && cfg.ledErrorBlinkMs > 0 && t >= next_toggle) {
                 blink_on = !blink_on;
-                if (blink_on) led_set(cfg.ledCancelledRgb[0], cfg.ledCancelledRgb[1], cfg.ledCancelledRgb[2]);
-                else          led_set(0, 0, 0);
+                if (blink_on) led_set_rgb(cfg.ledCancelledRgb);
+                else          led_off();
                 next_toggle = t + pdMS_TO_TICKS((uint32_t)cfg.ledErrorBlinkMs);
             }
             if (cfg.oledInvertMin > 0 && t >= next_invert) {
                 inverted = !inverted;
-                oled_cmd(inverted ? 0xA7 : 0xA6);
+                display_set_inverted(inverted);
                 next_invert = t + minutes_to_ticks((uint32_t)cfg.oledInvertMin);
             }
             if (t >= next_clock) {
@@ -932,20 +533,20 @@ void app_main(void) {
                     display_departures(last_deps, show_stale);
                 else if (!success)
                     display_error();
-                redraw_bar(run_forever, active_start, active_end);
+                display_countdown_bar(run_forever, active_start, active_end);
                 // Auch hier nachfuehren: zwischen zwei API-Zyklen liegen bis zu
                 // refreshVeryfarSec, so lange soll das Panel nicht veralten.
                 publish_in_window();
                 next_clock = t + pdMS_TO_TICKS(30 * 1000);
             }
             if (t >= next_bar) {
-                redraw_bar(run_forever, active_start, active_end);
+                display_countdown_bar(run_forever, active_start, active_end);
                 next_bar = t + pdMS_TO_TICKS(1000);
             }
             // Button während aktivem Betrieb → sofort schlafen
             if (button_pressed()) {
                 ESP_LOGI(TAG, "Button gedrückt → Schlaf");
-                wait_button_release(5000);   // sonst weckt derselbe Druck sofort wieder
+                button_wait_release(5000);   // sonst weckt derselbe Druck sofort wieder
                 force_sleep = true;
                 break;
             }
@@ -956,8 +557,8 @@ void app_main(void) {
         if (force_sleep) break;
     }
 
-    if (inverted) oled_cmd(0xA6);
+    if (inverted) display_set_inverted(false);
     http_server_stop();
-    show_sleep_info((cfg.sleepAfterS + 59) / 60);
+    display_sleep_info((cfg.sleepAfterS + 59) / 60);
     go_to_sleep((uint64_t)cfg.sleepAfterS * 1000000ULL);
 }

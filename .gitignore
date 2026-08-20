@@ -47,3 +47,7 @@ package-lock.json
 # Bewusst eng gefasst: ein globales *.png wuerde auch Bilder fuers README
 # stillschweigend schlucken.
 test/panel/*.png
+
+# Von test/native/run.sh erzeugt
+test/native/idfstub_impl.c
+test/native/idfstub/secrets.h
