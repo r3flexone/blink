@@ -9,6 +9,7 @@
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "mbedtls/base64.h"
 #include <string.h>
 #include <strings.h>   // strncasecmp() fuer die Content-Type-Pruefung
@@ -18,6 +19,41 @@
 
 static const char *TAG = "http_server";
 static httpd_handle_t server = NULL;
+
+// ===== Laufzeitstatus (siehe http_server.h) =====
+static SemaphoreHandle_t state_lock = NULL;
+static SbbDeparture last_deps[DEP_COUNT];
+static time_t       last_deps_time  = 0;   // 0 = noch keine erfolgreiche Abfrage
+static bool         st_in_window    = false;
+static bool         st_run_forever  = false;
+static time_t       st_active_end   = 0;
+
+void http_status_init(void) {
+    if (!state_lock) state_lock = xSemaphoreCreateMutex();
+}
+
+// Der Main-Task haelt die Sperre nur fuer ein memcpy von wenigen hundert Byte.
+static void state_lock_take(void) {
+    if (state_lock) xSemaphoreTake(state_lock, portMAX_DELAY);
+}
+static void state_lock_give(void) {
+    if (state_lock) xSemaphoreGive(state_lock);
+}
+
+void http_status_set_departures(const SbbDeparture deps[DEP_COUNT], time_t when) {
+    state_lock_take();
+    memcpy(last_deps, deps, sizeof(last_deps));
+    last_deps_time = when;
+    state_lock_give();
+}
+
+void http_status_set_active(bool in_window, bool run_forever, time_t active_end) {
+    state_lock_take();
+    st_in_window   = in_window;
+    st_run_forever = run_forever;
+    st_active_end  = active_end;
+    state_lock_give();
+}
 
 // ===== Optionaler Panel-Login (HTTP Basic Auth) =====
 // Leer = kein Login (Default fürs Heimnetz). Wird beim Serverstart aus NVS
@@ -384,19 +420,27 @@ static esp_err_t handler_departures_get(httpd_req_t *req) {
     if (require_auth(req) != ESP_OK) return ESP_OK;
     time_t now; time(&now);
 
+    // Erst unter der Sperre kopieren, dann in Ruhe serialisieren — sonst
+    // schreibt der Main-Task waehrend des Aufbaus des JSON dazwischen.
+    SbbDeparture deps[DEP_COUNT];
+    time_t deps_time;
+    state_lock_take();
+    memcpy(deps, last_deps, sizeof(deps));
+    deps_time = last_deps_time;
+    state_lock_give();
+
     cJSON *j = cJSON_CreateObject();
     // ageS = Sekunden seit der letzten erfolgreichen Abfrage, -1 = noch keine
-    cJSON_AddNumberToObject(j, "ageS",
-        g_last_deps_time ? (double)(now - g_last_deps_time) : -1);
+    cJSON_AddNumberToObject(j, "ageS", deps_time ? (double)(now - deps_time) : -1);
     cJSON *arr = cJSON_AddArrayToObject(j, "departures");
     for (int i = 0; i < DEP_COUNT; i++) {
-        if (!g_last_deps[i].valid) continue;
+        if (!deps[i].valid) continue;
         cJSON *d = cJSON_CreateObject();
-        cJSON_AddStringToObject(d, "time",        g_last_deps[i].time);
-        cJSON_AddStringToObject(d, "destination", g_last_deps[i].destination);
-        cJSON_AddStringToObject(d, "platform",    g_last_deps[i].platform);
-        cJSON_AddNumberToObject(d, "delay",       g_last_deps[i].delay);
-        cJSON_AddBoolToObject(d,   "cancelled",   g_last_deps[i].cancelled);
+        cJSON_AddStringToObject(d, "time",        deps[i].time);
+        cJSON_AddStringToObject(d, "destination", deps[i].destination);
+        cJSON_AddStringToObject(d, "platform",    deps[i].platform);
+        cJSON_AddNumberToObject(d, "delay",       deps[i].delay);
+        cJSON_AddBoolToObject(d,   "cancelled",   deps[i].cancelled);
         cJSON_AddItemToArray(arr, d);
     }
     char *body = cJSON_PrintUnformatted(j);
@@ -461,12 +505,18 @@ static esp_err_t handler_status_get(httpd_req_t *req) {
         cJSON_AddNumberToObject(j, "weekday", ti.tm_wday);
     }
 
-    cJSON_AddBoolToObject(j, "inWindow",   g_in_window);
-    cJSON_AddBoolToObject(j, "runForever", g_run_forever);
+    state_lock_take();
+    bool   in_window   = st_in_window;
+    bool   run_forever = st_run_forever;
+    time_t active_end  = st_active_end;
+    state_lock_give();
+
+    cJSON_AddBoolToObject(j, "inWindow",   in_window);
+    cJSON_AddBoolToObject(j, "runForever", run_forever);
     // Sekunden bis zum geplanten Schlafen; -1 = laeuft unbegrenzt/unbekannt
     double until = -1;
-    if (!g_run_forever && g_active_end_time > 0 && ntp)
-        until = (double)(g_active_end_time > now ? g_active_end_time - now : 0);
+    if (!run_forever && active_end > 0 && ntp)
+        until = (double)(active_end > now ? active_end - now : 0);
     cJSON_AddNumberToObject(j, "activeUntilS", until);
 
     cJSON_AddStringToObject(j, "lastError", sbb_last_error());

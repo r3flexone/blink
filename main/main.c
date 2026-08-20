@@ -29,13 +29,6 @@ static blink_config_t cfg;
 // Gesetzt vom HTTP-Server nach erfolgreichem POST /api/config
 volatile bool g_cfg_dirty = false;
 
-// Für GET /api/departures und /api/status (Deklarationen in http_server.h)
-SbbDeparture g_last_deps[DEP_COUNT];
-time_t g_last_deps_time = 0;
-volatile bool g_in_window = false;
-volatile bool g_run_forever = false;
-time_t g_active_end_time = 0;
-
 // pdMS_TO_TICKS() rechnet intern in 32 Bit (ms * configTICK_RATE_HZ) und
 // läuft ab ca. 11.9 h über — ein Zeitfenster von 23 h oder ein OLED-Invert-
 // Intervall von 1440 min ergäbe sonst eine viel zu kurze Dauer. Deshalb
@@ -48,16 +41,6 @@ static TickType_t minutes_to_ticks(uint32_t minutes) {
 static TickType_t seconds_to_ticks(uint32_t seconds) {
     if (seconds > MAX_DURATION_MIN * 60) seconds = MAX_DURATION_MIN * 60;
     return (TickType_t)seconds * configTICK_RATE_HZ;
-}
-
-// Restlaufzeit als Wanduhr-Zeitpunkt spiegeln, damit GET /api/status sagen
-// kann, bis wann das Gerät wach bleibt — Ticks nützen dem Panel nichts.
-static void publish_active_end(TickType_t end) {
-    TickType_t now_ticks = xTaskGetTickCount();
-    time_t now_wall; time(&now_wall);
-    uint32_t remain_s = (end > now_ticks)
-        ? (uint32_t)((end - now_ticks) / configTICK_RATE_HZ) : 0;
-    g_active_end_time = now_wall + (time_t)remain_s;
 }
 
 // ===== SLEEP =====
@@ -176,18 +159,34 @@ static int minutes_to_next_window(const blink_config_t *c, const struct tm *ti) 
     return best;
 }
 
-// g_in_window fuer GET /api/status nachfuehren. Muss regelmaessig laufen: bei
-// run_forever laeuft das Geraet ueber das Fensterende hinaus weiter, und ein
-// Config-Reload kann das gerade aktive Fenster entfernt haben. Frueher wurde
-// das Flag genau einmal beim Start gesetzt und nie wieder — das Panel meldete
-// dann bis zum Neustart "Im aktiven Zeitfenster".
-static void publish_in_window(void) {
+// Laufzeitstatus fuer GET /api/status nachfuehren. Muss regelmaessig laufen:
+// bei run_forever laeuft das Geraet ueber das Fensterende hinaus weiter, und
+// ein Config-Reload kann das gerade aktive Fenster entfernt haben. Frueher
+// wurde die Fensterlage genau einmal beim Start gesetzt und nie wieder — das
+// Panel meldete dann bis zum Neustart "Im aktiven Zeitfenster".
+//
+// active_end kommt in Ticks und wird hier in Wanduhrzeit umgerechnet: mit
+// Ticks kann das Panel nichts anfangen.
+static void publish_status(bool run_forever, TickType_t active_end) {
     time_t now; struct tm ti;
     time(&now); localtime_r(&now, &ti);
-    if (ti.tm_year < 100) { g_in_window = false; return; }
-    bool weekend_skip = cfg.weekdaysOnly && (ti.tm_wday == 0 || ti.tm_wday == 6);
-    g_in_window = !weekend_skip &&
-                  find_active_window(&cfg, ti.tm_hour * 60 + ti.tm_min, NULL);
+
+    bool in_window = false;
+    if (ti.tm_year >= 100) {
+        bool weekend_skip = cfg.weekdaysOnly && (ti.tm_wday == 0 || ti.tm_wday == 6);
+        in_window = !weekend_skip &&
+                    find_active_window(&cfg, ti.tm_hour * 60 + ti.tm_min, NULL);
+    }
+
+    time_t end_wall = 0;
+    if (!run_forever) {
+        TickType_t now_ticks = xTaskGetTickCount();
+        uint32_t remain_s = (active_end > now_ticks)
+            ? (uint32_t)((active_end - now_ticks) / configTICK_RATE_HZ) : 0;
+        end_wall = now + (time_t)remain_s;
+    }
+
+    http_status_set_active(in_window, run_forever, end_wall);
 }
 
 // ===== ZEITFENSTER-VALIDIERUNG =====
@@ -229,6 +228,7 @@ void app_main(void) {
         nvs_flash_init();
     }
     nvs_config_load(&cfg);
+    http_status_init();   // Mutex fuer den Laufzeitstatus, vor dem ersten Setter
 
     // Singular-API: auf allen ESP-IDF v5.x verfügbar. ESP_SLEEP_WAKEUP_UNDEFINED == 0
     // (Kaltstart), daher bleiben die wakeup==0 / !=0 Prüfungen weiter unten gültig.
@@ -287,7 +287,6 @@ void app_main(void) {
     int active_rem_min = 0;   // Minuten bis zum Fenster-Ende (wrap-fähig)
     bool in_window = time_valid && !weekend_skip &&
                      find_active_window(&cfg, cur_min, &active_rem_min);
-    g_in_window = in_window;
 
     if (!in_window && !woken_by_button && cfg.sleepEnabled && !ap_mode) {
         uint64_t sleep_us;
@@ -377,7 +376,6 @@ void app_main(void) {
         if (rem < 1) rem = 1;
         active_end = active_start + minutes_to_ticks((uint32_t)rem);
     }
-    publish_active_end(active_end);
 
     // Dest-Filter: Pointer-Array aus cfg.destFilters[][] bauen
     const char *filter_ptrs[MAX_DEST_FILTERS] = {0};
@@ -398,7 +396,7 @@ void app_main(void) {
     // Gilt auch im Zeitfenster — sonst wäre das Gerät bei "Schlaf aus" nach dem
     // Fensterende trotzdem für sleepAfterS eingeschlafen.
     bool run_forever = !cfg.sleepEnabled && !woken_by_button;
-    g_run_forever = run_forever;
+    publish_status(run_forever, active_end);
     TickType_t next_invert = xTaskGetTickCount() +
         minutes_to_ticks((uint32_t)(cfg.oledInvertMin > 0 ? cfg.oledInvertMin : 1440));
 
@@ -413,12 +411,10 @@ void app_main(void) {
                 ESP_LOGI(TAG, "Config neu geladen (Web-Panel)");
             }
             run_forever = !cfg.sleepEnabled && !woken_by_button;
-            g_run_forever = run_forever;
             if (was_forever && !run_forever) {
                 // Sleep wurde aktiviert → frischen buttonActiveMin-Timer starten
                 active_start = xTaskGetTickCount();
                 active_end   = active_start + minutes_to_ticks((uint32_t)cfg.buttonActiveMin);
-                publish_active_end(active_end);
                 ESP_LOGI(TAG, "Sleep aktiviert → Timer %d Min", cfg.buttonActiveMin);
             }
             // Invert-Intervall neu ansetzen; bei 0 (aus) sofort zurückschalten,
@@ -436,7 +432,7 @@ void app_main(void) {
             // wenn der Nutzer sie gerade verstellt hat.
             check_window_overlaps();
         }
-        publish_in_window();
+        publish_status(run_forever, active_end);
         wifi_reconnect_interruptible(&force_sleep);
         if (force_sleep) break;
 
@@ -454,8 +450,7 @@ void app_main(void) {
             memcpy(last_deps, deps, sizeof(deps));
             has_cached = true;
             time(&cached_time);
-            memcpy(g_last_deps, deps, sizeof(g_last_deps));
-            g_last_deps_time = cached_time;
+            http_status_set_departures(deps, cached_time);
         } else {
             time_t n; time(&n);
             if (has_cached && (n - cached_time) < cfg.staleMaxMin * 60) {
@@ -536,7 +531,7 @@ void app_main(void) {
                 display_countdown_bar(run_forever, active_start, active_end);
                 // Auch hier nachfuehren: zwischen zwei API-Zyklen liegen bis zu
                 // refreshVeryfarSec, so lange soll das Panel nicht veralten.
-                publish_in_window();
+                publish_status(run_forever, active_end);
                 next_clock = t + pdMS_TO_TICKS(30 * 1000);
             }
             if (t >= next_bar) {
