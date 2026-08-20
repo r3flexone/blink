@@ -28,8 +28,7 @@ static char panel_pass[32] = "";
 static void panel_pass_load(void) {
     nvs_handle_t h;
     panel_pass[0] = 0;
-    // Namespace wie in nvs_config.c (NVS_NS)
-    if (nvs_open("blink_cfg", NVS_READONLY, &h) == ESP_OK) {
+    if (nvs_open(NVS_CONFIG_NS, NVS_READONLY, &h) == ESP_OK) {
         size_t len = sizeof(panel_pass);
         if (nvs_get_str(h, "panelPass", panel_pass, &len) != ESP_OK)
             panel_pass[0] = 0;
@@ -182,81 +181,29 @@ static esp_err_t handler_config_get(httpd_req_t *req) {
         cJSON_AddItemToArray(tws, tw);
     }
 
-    // Button
-    cJSON_AddNumberToObject(j, "buttonActiveMin",      cfg.buttonActiveMin);
-    cJSON_AddNumberToObject(j, "buttonLongPressMs",   cfg.buttonLongPressMs);
-    cJSON_AddNumberToObject(j, "buttonLongActiveMin", cfg.buttonLongActiveMin);
-    cJSON_AddNumberToObject(j, "buttonGpio",          cfg.buttonGpio);
-
-    // Netzwerk (Passwörter NICHT senden, nur ob Panel-Login aktiv ist)
-    cJSON_AddStringToObject(j, "ssid",       cfg.ssid);
-    cJSON_AddNumberToObject(j, "ntpTimeoutS",cfg.ntpTimeoutS);
-    cJSON_AddStringToObject(j, "station",    cfg.station);
-    cJSON_AddBoolToObject(j,   "panelAuthEnabled", cfg.panelPass[0] != 0);
-
     // Ziel-Filter
     cJSON *filters = cJSON_AddArrayToObject(j, "destFilters");
     for (int i = 0; i < cfg.destFilterCount; i++)
         cJSON_AddItemToArray(filters, cJSON_CreateString(cfg.destFilters[i]));
     cJSON_AddNumberToObject(j, "destFilterCount", cfg.destFilterCount);
 
-    // Schlaf
-    cJSON_AddBoolToObject(j,   "sleepEnabled",   cfg.sleepEnabled);
-    cJSON_AddNumberToObject(j, "sleepFallbackS", cfg.sleepFallbackS);
-    cJSON_AddNumberToObject(j, "sleepAfterS",    cfg.sleepAfterS);
-    cJSON_AddNumberToObject(j, "sleepMaxMin",    cfg.sleepMaxMin);
+    // Passwörter werden nie ausgeliefert — nur, ob der Panel-Login aktiv ist.
+    cJSON_AddBoolToObject(j, "panelAuthEnabled", cfg.panelPass[0] != 0);
 
-    // Hardware
-    cJSON_AddNumberToObject(j, "ledGpio",     cfg.ledGpio);
-    cJSON_AddNumberToObject(j, "sdaGpio",     cfg.sdaGpio);
-    cJSON_AddNumberToObject(j, "sclGpio",     cfg.sclGpio);
-    cJSON_AddStringToObject(j, "oledAddr",    cfg.oledAddr);
-    cJSON_AddNumberToObject(j, "oledInvertMin", cfg.oledInvertMin);
-
-    // LED-Farben als "#RRGGBB"
-    char hex[8];
-    rgb_to_hex(cfg.ledOkRgb,         hex); cJSON_AddStringToObject(j, "ledOkColor",         hex);
-    rgb_to_hex(cfg.ledDelaySmallRgb, hex); cJSON_AddStringToObject(j, "ledDelaySmallColor", hex);
-    rgb_to_hex(cfg.ledDelayBigRgb,   hex); cJSON_AddStringToObject(j, "ledDelayBigColor",   hex);
-    rgb_to_hex(cfg.ledCancelledRgb,  hex); cJSON_AddStringToObject(j, "ledCancelledColor",  hex);
-    rgb_to_hex(cfg.ledLoadingRgb,    hex); cJSON_AddStringToObject(j, "ledLoadingColor",     hex);
-    cJSON_AddNumberToObject(j, "ledErrorBlinkMs", cfg.ledErrorBlinkMs);
-
-    // Verspätungs-Schwellen
-    cJSON_AddNumberToObject(j, "delaySmallMin", cfg.delaySmallMin);
-    cJSON_AddNumberToObject(j, "delayBigMin",   cfg.delayBigMin);
-
-    // Adaptiver Refresh
-    cJSON_AddNumberToObject(j, "refreshNearSec",   cfg.refreshNearSec);
-    cJSON_AddNumberToObject(j, "refreshMidSec",    cfg.refreshMidSec);
-    cJSON_AddNumberToObject(j, "refreshFarSec",    cfg.refreshFarSec);
-    cJSON_AddNumberToObject(j, "refreshVeryfarSec",cfg.refreshVeryfarSec);
-    cJSON_AddNumberToObject(j, "refreshNearMin",   cfg.refreshNearMin);
-    cJSON_AddNumberToObject(j, "refreshMidMin",    cfg.refreshMidMin);
-    cJSON_AddNumberToObject(j, "refreshFarMin",    cfg.refreshFarMin);
-
-    // API
-    cJSON_AddNumberToObject(j, "apiRetryCount",  cfg.apiRetryCount);
-    cJSON_AddNumberToObject(j, "apiRetryDelayS", cfg.apiRetryDelayS);
-    cJSON_AddNumberToObject(j, "staleMaxMin",    cfg.staleMaxMin);
-
-    // Verhalten
-    cJSON_AddBoolToObject(j, "weekdaysOnly", cfg.weekdaysOnly);
-
-    // Wochenend-Schlaf-Fenster
-    cJSON_AddBoolToObject(j,   "weekendSleepEnabled", cfg.weekendSleepEnabled);
-    cJSON_AddNumberToObject(j, "weekendStartDay", cfg.weekendStartDay);
-    cJSON_AddNumberToObject(j, "weekendStartH",   cfg.weekendStartH);
-    cJSON_AddNumberToObject(j, "weekendStartM",   cfg.weekendStartM);
-    cJSON_AddNumberToObject(j, "weekendEndDay",   cfg.weekendEndDay);
-    cJSON_AddNumberToObject(j, "weekendEndH",     cfg.weekendEndH);
-    cJSON_AddNumberToObject(j, "weekendEndM",     cfg.weekendEndM);
+    // Alle übrigen Felder direkt aus der Tabelle
+    #define CFG_INT(f, nk, jk, def, lo, hi)  cJSON_AddNumberToObject(j, jk, cfg.f);
+    #define CFG_GPIO(f, nk, jk, def, maxg)   cJSON_AddNumberToObject(j, jk, cfg.f);
+    #define CFG_BOOL(f, nk, jk, def)         cJSON_AddBoolToObject(j, jk, cfg.f);
+    #define CFG_STR(f, nk, jk, def)          cJSON_AddStringToObject(j, jk, cfg.f);
+    #define CFG_RGB(f, nk, jk, r, g, b) \
+        { char hx_[8]; rgb_to_hex(cfg.f, hx_); cJSON_AddStringToObject(j, jk, hx_); }
+    #include "config_fields.def"
 
     char *body = cJSON_PrintUnformatted(j);
     cJSON_Delete(j);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr(req, body);
+    httpd_resp_sendstr(req, body ? body : "{}");
     free(body);
     return ESP_OK;
 }
@@ -300,23 +247,41 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
         return ESP_FAIL;
     }
 
+    // Basis ist der gespeicherte Stand: ein Body, der nur einzelne Felder
+    // mitbringt (z.B. panelPassClear), darf den Rest nicht zuruecksetzen.
     blink_config_t cfg;
     nvs_config_load(&cfg);
 
-    #define GI(key, field) { cJSON *v=cJSON_GetObjectItem(j,key); if(cJSON_IsNumber(v)) cfg.field=(int)v->valuedouble; }
-    #define GB(key, field) { cJSON *v=cJSON_GetObjectItem(j,key); if(cJSON_IsBool(v))   cfg.field=cJSON_IsTrue(v); }
-    #define GS(key, field) { cJSON *v=cJSON_GetObjectItem(j,key); if(cJSON_IsString(v)&&v->valuestring) { strncpy(cfg.field,v->valuestring,sizeof(cfg.field)-1); cfg.field[sizeof(cfg.field)-1]='\0'; } }
-    #define GRGB(key, arr) { cJSON *v=cJSON_GetObjectItem(j,key); if(cJSON_IsString(v)&&v->valuestring) hex_to_rgb(v->valuestring,cfg.arr); }
+    #define GET_INT(key, field) \
+        { cJSON *v = cJSON_GetObjectItem(j, key); \
+          if (cJSON_IsNumber(v)) cfg.field = (int)v->valuedouble; }
+    #define GET_BOOL(key, field) \
+        { cJSON *v = cJSON_GetObjectItem(j, key); \
+          if (cJSON_IsBool(v)) cfg.field = cJSON_IsTrue(v); }
+    #define GET_STR(key, field) \
+        { cJSON *v = cJSON_GetObjectItem(j, key); \
+          if (cJSON_IsString(v) && v->valuestring) { \
+              strncpy(cfg.field, v->valuestring, sizeof(cfg.field) - 1); \
+              cfg.field[sizeof(cfg.field) - 1] = '\0'; } }
+    #define GET_RGB(key, field) \
+        { cJSON *v = cJSON_GetObjectItem(j, key); \
+          if (cJSON_IsString(v) && v->valuestring) hex_to_rgb(v->valuestring, cfg.field); }
     // GPIO nur in gültigem Bereich übernehmen — ein Tippfehler im Panel darf
-    // das Gerät nicht in einen Panic-Boot-Loop schicken (ESP32-S3: GPIO 0–48,
-    // Button braucht RTC-GPIO 0–21 für den Deep-Sleep-Wakeup).
-    #define GGPIO(key, field, maxg) { cJSON *v=cJSON_GetObjectItem(j,key); if(cJSON_IsNumber(v)) { int g=(int)v->valuedouble; if(g>=0&&g<=(maxg)) cfg.field=g; else ESP_LOGW(TAG,"%s: GPIO %d ungueltig, behalte %d",key,g,cfg.field); } }
+    // das Gerät nicht in einen Panic-Boot-Loop schicken. Anders als bei einem
+    // clamp bleibt der alte Wert stehen, damit das Panel den Unterschied im
+    // Read-back sieht und meldet.
+    #define GET_GPIO(key, field, maxg) \
+        { cJSON *v = cJSON_GetObjectItem(j, key); \
+          if (cJSON_IsNumber(v)) { \
+              int g_ = (int)v->valuedouble; \
+              if (g_ >= 0 && g_ <= (maxg)) cfg.field = g_; \
+              else ESP_LOGW(TAG, "%s: GPIO %d ungueltig, behalte %d", key, g_, cfg.field); } }
 
-    // Zeitfenster-Array
+    // --- Zeitfenster-Array ---
     cJSON *tws = cJSON_GetObjectItem(j, "timeWindows");
     if (cJSON_IsArray(tws)) {
         int cnt = cJSON_GetArraySize(tws);
-        if (cnt > 8) cnt = 8;
+        if (cnt > MAX_TIME_WINDOWS) cnt = MAX_TIME_WINDOWS;
         cfg.timeWindowCount = cnt;
         for (int i = 0; i < cnt; i++) {
             cJSON *tw = cJSON_GetArrayItem(tws, i);
@@ -331,14 +296,30 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
         }
     }
 
-    // Button
-    GI("buttonActiveMin",     buttonActiveMin)
-    GI("buttonLongPressMs",   buttonLongPressMs)
-    GI("buttonLongActiveMin", buttonLongActiveMin)
-    GGPIO("buttonGpio",       buttonGpio, 21)
+    // --- Ziel-Filter ---
+    cJSON *filters = cJSON_GetObjectItem(j, "destFilters");
+    if (cJSON_IsArray(filters)) {
+        int cnt = cJSON_GetArraySize(filters);
+        if (cnt > MAX_DEST_FILTERS) cnt = MAX_DEST_FILTERS;
+        cfg.destFilterCount = cnt;
+        for (int i = 0; i < cnt; i++) {
+            cJSON *f = cJSON_GetArrayItem(filters, i);
+            if (cJSON_IsString(f) && f->valuestring) {
+                strncpy(cfg.destFilters[i], f->valuestring, sizeof(cfg.destFilters[i]) - 1);
+                cfg.destFilters[i][sizeof(cfg.destFilters[i]) - 1] = '\0';
+            }
+        }
+    }
 
-    // Netzwerk
-    GS("ssid",        ssid)
+    // --- Alle Skalarfelder aus der Tabelle ---
+    #define CFG_INT(f, nk, jk, def, lo, hi)  GET_INT(jk, f)
+    #define CFG_GPIO(f, nk, jk, def, maxg)   GET_GPIO(jk, f, maxg)
+    #define CFG_BOOL(f, nk, jk, def)         GET_BOOL(jk, f)
+    #define CFG_STR(f, nk, jk, def)          GET_STR(jk, f)
+    #define CFG_RGB(f, nk, jk, r, g, b)      GET_RGB(jk, f)
+    #include "config_fields.def"
+
+    // --- Sonderfaelle rund um die Passwoerter ---
     // Geleerte SSID = explizit zurück auf secrets.h. Dann auch das gespeicherte
     // Passwort verwerfen — sonst entsteht die Kombination "SSID aus secrets.h
     // + altes NVS-Passwort" und der Connect schlägt fehl.
@@ -347,10 +328,10 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
         if (cJSON_IsString(v) && v->valuestring && !v->valuestring[0])
             cfg.password[0] = '\0';
     }
-    // Passwort: nur überschreiben wenn nicht leer.
-    // GET sendet das Passwort aus Sicherheitsgründen nicht zurück, deshalb
-    // ist das Feld im UI nach dem Laden leer. Würden wir den leeren String
-    // übernehmen, würde jeder Save das bestehende Passwort löschen.
+    // Passwort: nur überschreiben wenn nicht leer. GET sendet es aus
+    // Sicherheitsgründen nicht zurück, das Feld im UI ist nach dem Laden also
+    // leer — würden wir den leeren String übernehmen, löschte jeder Save das
+    // bestehende Passwort.
     {
         cJSON *v = cJSON_GetObjectItem(j, "password");
         if (cJSON_IsString(v) && v->valuestring && v->valuestring[0]) {
@@ -358,8 +339,6 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
             cfg.password[sizeof(cfg.password) - 1] = '\0';
         }
     }
-    GI("ntpTimeoutS", ntpTimeoutS)
-    GS("station",     station)
     // Panel-Login: leeres Feld = unverändert (wie WLAN-Passwort);
     // explizites Deaktivieren über panelPassClear:true.
     {
@@ -372,71 +351,11 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
             cfg.panelPass[0] = '\0';
     }
 
-    // Ziel-Filter
-    cJSON *filters = cJSON_GetObjectItem(j, "destFilters");
-    if (cJSON_IsArray(filters)) {
-        int cnt = cJSON_GetArraySize(filters);
-        if (cnt > 4) cnt = 4;
-        cfg.destFilterCount = cnt;
-        for (int i = 0; i < cnt; i++) {
-            cJSON *f = cJSON_GetArrayItem(filters, i);
-            if (cJSON_IsString(f) && f->valuestring) {
-                strncpy(cfg.destFilters[i], f->valuestring, sizeof(cfg.destFilters[i]) - 1);
-                cfg.destFilters[i][sizeof(cfg.destFilters[i]) - 1] = '\0';
-            }
-        }
-    }
-
-    // Schlaf
-    GB("sleepEnabled",   sleepEnabled)
-    GI("sleepFallbackS", sleepFallbackS)
-    GI("sleepAfterS",    sleepAfterS)
-    GI("sleepMaxMin",    sleepMaxMin)
-
-    // Hardware
-    GGPIO("ledGpio",   ledGpio, 48)
-    GGPIO("sdaGpio",   sdaGpio, 48)
-    GGPIO("sclGpio",   sclGpio, 48)
-    GS("oledAddr",     oledAddr)
-    GI("oledInvertMin",oledInvertMin)
-
-    // LED-Farben
-    GRGB("ledOkColor",         ledOkRgb)
-    GRGB("ledDelaySmallColor", ledDelaySmallRgb)
-    GRGB("ledDelayBigColor",   ledDelayBigRgb)
-    GRGB("ledCancelledColor",  ledCancelledRgb)
-    GRGB("ledLoadingColor",    ledLoadingRgb)
-    GI("ledErrorBlinkMs",      ledErrorBlinkMs)
-
-    // Verspätungs-Schwellen
-    GI("delaySmallMin", delaySmallMin)
-    GI("delayBigMin",   delayBigMin)
-
-    // Adaptiver Refresh
-    GI("refreshNearSec",    refreshNearSec)
-    GI("refreshMidSec",     refreshMidSec)
-    GI("refreshFarSec",     refreshFarSec)
-    GI("refreshVeryfarSec", refreshVeryfarSec)
-    GI("refreshNearMin",    refreshNearMin)
-    GI("refreshMidMin",     refreshMidMin)
-    GI("refreshFarMin",     refreshFarMin)
-
-    // API
-    GI("apiRetryCount",  apiRetryCount)
-    GI("apiRetryDelayS", apiRetryDelayS)
-    GI("staleMaxMin",    staleMaxMin)
-
-    // Verhalten
-    GB("weekdaysOnly", weekdaysOnly)
-
-    // Wochenend-Schlaf-Fenster
-    GB("weekendSleepEnabled", weekendSleepEnabled)
-    GI("weekendStartDay", weekendStartDay)
-    GI("weekendStartH",   weekendStartH)
-    GI("weekendStartM",   weekendStartM)
-    GI("weekendEndDay",   weekendEndDay)
-    GI("weekendEndH",     weekendEndH)
-    GI("weekendEndM",     weekendEndM)
+    #undef GET_INT
+    #undef GET_BOOL
+    #undef GET_STR
+    #undef GET_RGB
+    #undef GET_GPIO
 
     cJSON_Delete(j);
 

@@ -1,0 +1,138 @@
+// Tabelle aller skalaren Konfigurationsfelder — die eine Stelle, an der ein
+// neues Tunable eingetragen wird.
+//
+// Vorher stand jedes Feld in sieben Quellen: blink_config_t, defaults(),
+// sanitize(), load(), save(), handler_config_get() und handler_config_post().
+// Wer eine davon vergass, bekam ein Feld, das sich speichern liess und beim
+// naechsten Boot wieder auf dem Default stand. Jetzt bleiben zwei Stellen:
+// diese Tabelle und das Feld in blink_config_t.
+//
+// Jeder Konsument definiert nur die Makros, die er braucht, und included die
+// Datei; der Rest wird hier auf leer gesetzt und am Ende wieder aufgeraeumt.
+//
+//   CFG_INT (feld, nvsKey, jsonKey, default, min, max)
+//   CFG_GPIO(feld, nvsKey, jsonKey, default, maxGpio)
+//   CFG_BOOL(feld, nvsKey, jsonKey, default)
+//   CFG_STR (feld, nvsKey, jsonKey, default)
+//   CFG_RGB (feld, nvsKey, jsonKey, r, g, b)
+//
+// NVS-Keys sind auf 15 Zeichen begrenzt (ESP-IDF) und duerfen nicht mehr
+// geaendert werden: ein neuer Key liest die gespeicherte Einstellung des
+// Nutzers nicht mehr und faellt still auf den Default zurueck. Dasselbe gilt
+// fuer die JSON-Keys gegenueber dem Web-Panel.
+//
+// Nicht in der Tabelle, weil sie Sonderbehandlung brauchen (siehe nvs_config.c
+// bzw. http_server.c): timeWindows/timeWindowCount und destFilters/
+// destFilterCount (Arrays), password und panelPass (werden per GET nie
+// ausgeliefert, leeres Feld heisst "unveraendert").
+
+#ifndef CFG_INT
+#define CFG_INT(f, nk, jk, def, lo, hi)
+#define CFG_INT_UNDEF
+#endif
+#ifndef CFG_GPIO
+#define CFG_GPIO(f, nk, jk, def, maxg)
+#define CFG_GPIO_UNDEF
+#endif
+#ifndef CFG_BOOL
+#define CFG_BOOL(f, nk, jk, def)
+#define CFG_BOOL_UNDEF
+#endif
+#ifndef CFG_STR
+#define CFG_STR(f, nk, jk, def)
+#define CFG_STR_UNDEF
+#endif
+#ifndef CFG_RGB
+#define CFG_RGB(f, nk, jk, r, g, b)
+#define CFG_RGB_UNDEF
+#endif
+
+// ===== Button =====
+CFG_INT (buttonActiveMin,     "btnActiveMin", "buttonActiveMin",     10,    1,  1440)
+CFG_INT (buttonLongPressMs,   "btnLongMs",    "buttonLongPressMs",   3000, 100, 30000)
+CFG_INT (buttonLongActiveMin, "btnLongMin",   "buttonLongActiveMin", 10,    1,  1440)
+// Deep-Sleep-Wakeup braucht ein RTC-GPIO — auf dem ESP32-S3 sind das 0–21.
+CFG_GPIO(buttonGpio,          "btnGpio",      "buttonGpio",          0,    21)
+
+// ===== Netzwerk =====
+CFG_STR (ssid,        "ssid",        "ssid",        "")
+CFG_INT (ntpTimeoutS, "ntpTimeoutS", "ntpTimeoutS", 5, 1, 60)
+CFG_STR (station,     "station",     "station",     "Gelterkinden")
+
+// ===== Schlaf =====
+CFG_BOOL(sleepEnabled,   "sleepEn",     "sleepEnabled",   true)
+CFG_INT (sleepFallbackS, "sleepFbS",    "sleepFallbackS", 300, 10, 86400)
+// 0 wuerde sofort wieder aufwecken und den Button-Schlaf wirkungslos machen.
+CFG_INT (sleepAfterS,    "sleepAfterS", "sleepAfterS",    300,  5, 86400)
+CFG_INT (sleepMaxMin,    "sleepMaxMin", "sleepMaxMin",    120,  1, 1440)
+
+// ===== Wochenend-Schlaf-Fenster =====
+CFG_BOOL(weekendSleepEnabled, "weSlpEn",    "weekendSleepEnabled", true)
+CFG_INT (weekendStartDay,     "weStartDay", "weekendStartDay",     5, 0,  6)
+CFG_INT (weekendStartH,       "weStartH",   "weekendStartH",      18, 0, 23)
+CFG_INT (weekendStartM,       "weStartM",   "weekendStartM",       0, 0, 59)
+CFG_INT (weekendEndDay,       "weEndDay",   "weekendEndDay",       1, 0,  6)
+CFG_INT (weekendEndH,         "weEndH",     "weekendEndH",         5, 0, 23)
+CFG_INT (weekendEndM,         "weEndM",     "weekendEndM",         0, 0, 59)
+
+// ===== Hardware =====
+CFG_GPIO(ledGpio,       "ledGpio",    "ledGpio",       48, 48)
+CFG_GPIO(sdaGpio,       "sdaGpio",    "sdaGpio",        4, 48)
+CFG_GPIO(sclGpio,       "sclGpio",    "sclGpio",        5, 48)
+CFG_STR (oledAddr,      "oledAddr",   "oledAddr",      "0x3C")
+CFG_INT (oledInvertMin, "oledInvMin", "oledInvertMin",  5, 0, 1440)
+
+// ===== LED =====
+CFG_RGB (ledOkRgb,         "ledOk",      "ledOkColor",           0, 255,   0)
+CFG_RGB (ledDelaySmallRgb, "ledDlySm",   "ledDelaySmallColor",   0, 255, 255)
+CFG_RGB (ledDelayBigRgb,   "ledDlyBig",  "ledDelayBigColor",   128,   0, 255)
+CFG_RGB (ledCancelledRgb,  "ledCancel",  "ledCancelledColor",  255,   0,   0)
+CFG_RGB (ledLoadingRgb,    "ledLoad",    "ledLoadingColor",    255, 128,   0)
+CFG_INT (ledErrorBlinkMs,  "ledErrBlMs", "ledErrorBlinkMs",    500, 0, 60000)
+// 0 = LED aus, 255 = volle Helligkeit des WS2812.
+CFG_INT (ledBrightness,    "ledBright",  "ledBrightness",       16, 1,   255)
+
+// ===== Verspaetungs-Schwellen =====
+// delayBigMin muss ueber delaySmallMin liegen — Querbezug, siehe sanitize().
+CFG_INT (delaySmallMin, "dlySmlMin", "delaySmallMin", 2, 1, 240)
+CFG_INT (delayBigMin,   "dlyBigMin", "delayBigMin",   6, 1, 240)
+
+// ===== Adaptiver Refresh =====
+// Untergrenze 10 s: 0 machte aus der Warteschleife eine Dauerabfrage.
+CFG_INT (refreshNearSec,    "rfNearSec", "refreshNearSec",     30, 10, 3600)
+CFG_INT (refreshMidSec,     "rfMidSec",  "refreshMidSec",     120, 10, 3600)
+CFG_INT (refreshFarSec,     "rfFarSec",  "refreshFarSec",     300, 10, 3600)
+CFG_INT (refreshVeryfarSec, "rfVfarSec", "refreshVeryfarSec", 600, 10, 3600)
+CFG_INT (refreshNearMin,    "rfNearMin", "refreshNearMin",      5,  1, 1440)
+CFG_INT (refreshMidMin,     "rfMidMin",  "refreshMidMin",      10,  1, 1440)
+CFG_INT (refreshFarMin,     "rfFarMin",  "refreshFarMin",      30,  1, 1440)
+
+// ===== API =====
+// 0 hiesse: die Retry-Schleife laeuft nie, also nie eine Abfrage.
+CFG_INT (apiRetryCount,  "apiRetry",    "apiRetryCount",   3, 1,   10)
+CFG_INT (apiRetryDelayS, "apiRetDlyS",  "apiRetryDelayS",  5, 1,  300)
+CFG_INT (staleMaxMin,    "staleMaxMin", "staleMaxMin",    10, 1, 1440)
+
+// ===== Verhalten =====
+CFG_BOOL(weekdaysOnly, "wdOnly", "weekdaysOnly", true)
+
+#ifdef CFG_INT_UNDEF
+#undef CFG_INT_UNDEF
+#endif
+#ifdef CFG_GPIO_UNDEF
+#undef CFG_GPIO_UNDEF
+#endif
+#ifdef CFG_BOOL_UNDEF
+#undef CFG_BOOL_UNDEF
+#endif
+#ifdef CFG_STR_UNDEF
+#undef CFG_STR_UNDEF
+#endif
+#ifdef CFG_RGB_UNDEF
+#undef CFG_RGB_UNDEF
+#endif
+#undef CFG_INT
+#undef CFG_GPIO
+#undef CFG_BOOL
+#undef CFG_STR
+#undef CFG_RGB

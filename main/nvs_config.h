@@ -8,6 +8,10 @@
 #define MAX_TIME_WINDOWS  8
 #define MAX_DEST_FILTERS  4
 
+// NVS-Namespace. Auch http_server.c liest daraus (panelPass beim Serverstart);
+// als Stringliteral an zwei Stellen waere ein Umbenennen ein stiller Bruch.
+#define NVS_CONFIG_NS "blink_cfg"
+
 // ===== Zeitfenster-Eintrag =====
 typedef struct {
     int startH;
@@ -62,6 +66,7 @@ typedef struct {
     uint8_t ledCancelledRgb[3];     // Ausfall           → rot
     uint8_t ledLoadingRgb[3];       // Verbinden         → orange
     int     ledErrorBlinkMs;        // Blink-Periode bei Fehler (ms)
+    int     ledBrightness;          // Helligkeit 1–255 (255 = voll)
 
     // --- Verspätungs-Schwellen ---
     int  delaySmallMin;             // ab wann cyan (min)
@@ -96,7 +101,7 @@ typedef struct {
 } blink_config_t;
 
 /**
- * Füllt *cfg mit Firmware-Defaults.
+ * Füllt *cfg mit Firmware-Defaults (aus config_fields.def).
  */
 void nvs_config_defaults(blink_config_t *cfg);
 

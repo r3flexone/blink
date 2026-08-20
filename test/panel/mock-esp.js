@@ -15,7 +15,7 @@ const cfg = {
   sleepEnabled:true, sleepFallbackS:300, sleepAfterS:300, sleepMaxMin:90,
   ledGpio:48, sdaGpio:4, sclGpio:5, oledAddr:'0x3C', oledInvertMin:5,
   ledOkColor:'#00FF00', ledDelaySmallColor:'#00FFFF', ledDelayBigColor:'#8000FF',
-  ledCancelledColor:'#FF0000', ledLoadingColor:'#FF8000', ledErrorBlinkMs:500,
+  ledCancelledColor:'#FF0000', ledLoadingColor:'#FF8000', ledBrightness:16, ledErrorBlinkMs:500,
   delaySmallMin:3, delayBigMin:8,
   refreshNearSec:30, refreshMidSec:120, refreshFarSec:300, refreshVeryfarSec:600,
   refreshNearMin:5, refreshMidMin:10, refreshFarMin:30,

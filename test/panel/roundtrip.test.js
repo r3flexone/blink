@@ -26,7 +26,7 @@ function makeCfg(long) {
   sleepEnabled:false, sleepFallbackS:1234, sleepAfterS:987, sleepMaxMin:456,
   ledGpio:38, sdaGpio:17, sclGpio:18, oledAddr:'0x3D', oledInvertMin:47,
   ledOkColor:'#123456', ledDelaySmallColor:'#ABCDEF', ledDelayBigColor:'#0F0F0F',
-  ledCancelledColor:'#FEDCBA', ledLoadingColor:'#778899', ledErrorBlinkMs:4321,
+  ledCancelledColor:'#FEDCBA', ledLoadingColor:'#778899', ledBrightness:16, ledErrorBlinkMs:4321,
   delaySmallMin:7, delayBigMin:19,
   refreshNearSec:41, refreshMidSec:222, refreshFarSec:333, refreshVeryfarSec:1444,
   refreshNearMin:9, refreshMidMin:19, refreshFarMin:59,

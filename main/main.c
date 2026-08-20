@@ -71,9 +71,17 @@ static void led_init(void) {
     led_ok = true;
     led_strip_clear(led_strip);
 }
+// Helligkeit skalieren statt fest durch 16 zu teilen. Vorher landeten von den
+// 24 Bit des Farbwaehlers im Panel nur 4 Bit pro Kanal auf der LED: #0F0F0F war
+// aus, und #101010 bis #1F1F1F waren nicht zu unterscheiden. Der Default von
+// ledBrightness = 16 entspricht genau der bisherigen Helligkeit.
 static void led_set(uint8_t r, uint8_t g, uint8_t b) {
     if (!led_ok) return;
-    led_strip_set_pixel(led_strip, 0, r/16, g/16, b/16);
+    uint32_t bright = (uint32_t)cfg.ledBrightness;
+    led_strip_set_pixel(led_strip, 0,
+                        (uint32_t)r * bright / 255,
+                        (uint32_t)g * bright / 255,
+                        (uint32_t)b * bright / 255);
     led_strip_refresh(led_strip);
 }
 // Schlimmster Status aller gültigen Züge: Ausfall > grosse > kleine Verspätung > OK

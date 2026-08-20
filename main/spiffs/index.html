@@ -263,6 +263,7 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
         </div>
         <div class="card">
           <div class="card-head"><div class="card-title">Fehler-Blinken</div></div>
+          <div class="field"><div class="field-meta"><div class="field-label">Helligkeit</div><div class="field-hint">1–255 · 16 = bisherige Werkseinstellung</div></div><div class="field-ctrl"><input type="number" class="sm" id="ledBrightness" value="16" min="1" max="255"></div></div>
           <div class="field"><div class="field-meta"><div class="field-label">Fehler-Blinken</div><div class="field-hint">Blink-Periode bei Verbindungsfehler (0 = dauerhaft Rot)</div></div><div class="field-ctrl"><input type="number" class="sm" id="ledErrorBlinkMs" value="500" min="0" max="5000"><span class="unit">ms</span></div></div>
         </div>
         <div class="card">
@@ -942,6 +943,7 @@ async function saveConfig() {
     ledDelayBigColor:     document.getElementById('ledDelayBigColor').value,
     ledCancelledColor:    document.getElementById('ledCancelledColor').value,
     ledLoadingColor:      document.getElementById('ledLoadingColor').value,
+    ledBrightness:        numVal('ledBrightness'),
     ledErrorBlinkMs:      numVal('ledErrorBlinkMs'),
     delaySmallMin:        dsm,
     delayBigMin:          dbm,
@@ -1114,6 +1116,7 @@ async function loadConfig() {
     setVal('ledDelayBigColor',    cfg.ledDelayBigColor);
     setVal('ledCancelledColor',   cfg.ledCancelledColor);
     setVal('ledLoadingColor',     cfg.ledLoadingColor);
+    setVal('ledBrightness',       cfg.ledBrightness);
     setVal('ledErrorBlinkMs',     cfg.ledErrorBlinkMs);
     setVal('delaySmallMin',       cfg.delaySmallMin);
     setVal('delayBigMin',         cfg.delayBigMin);
