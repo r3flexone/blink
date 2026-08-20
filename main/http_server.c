@@ -11,6 +11,7 @@
 #include "freertos/task.h"
 #include "mbedtls/base64.h"
 #include <string.h>
+#include <strings.h>   // strncasecmp() fuer die Content-Type-Pruefung
 #include <stdio.h>
 #include <stdlib.h>   // free() für die cJSON-Print-Puffer
 #include <time.h>
@@ -60,6 +61,65 @@ static esp_err_t require_auth(httpd_req_t *req) {
     httpd_resp_set_hdr(req, "WWW-Authenticate", "Basic realm=\"SBB-Monitor\"");
     httpd_resp_sendstr(req, "Login erforderlich");
     return ESP_FAIL;
+}
+
+// ===== CSRF-Schutz fuer schreibende Endpunkte =====
+// panelPass ist per Default leer, das Geraet haengt im Heimnetz. Ohne diese
+// Pruefung kann jede beliebige Webseite, die der Nutzer im selben Netz oeffnet,
+// per fetch() die Konfiguration ueberschreiben: mit Content-Type text/plain
+// (CORS-safelisted) entfaellt der Preflight, der Request geht durch, und die
+// Firmware parst den Body trotzdem als JSON. Zwei Riegel dagegen:
+//
+//  1. Content-Type muss application/json sein. Damit ist der Request nicht mehr
+//     "simple" und der Browser schickt zuerst einen Preflight, den der Server
+//     mangels OPTIONS-Handler nicht beantwortet.
+//  2. Ein mitgeschickter Origin-Header muss zum eigenen Host passen. Browser
+//     senden Origin bei jedem POST, also auch beim same-origin-POST des Panels
+//     — dort ist er identisch mit Host. Ein abweichender Origin ist immer ein
+//     Cross-Site-Aufruf. Fehlt der Header ganz (curl, lokales Tooling), wird
+//     durchgelassen: dann steht kein Browser dahinter, der sich missbrauchen
+//     liesse.
+static bool content_type_is_json(httpd_req_t *req) {
+    static const char JSON_CT[] = "application/json";
+    const size_t n = sizeof(JSON_CT) - 1;
+    char ct[64];
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", ct, sizeof(ct)) != ESP_OK)
+        return false;
+    if (strncasecmp(ct, JSON_CT, n) != 0) return false;
+    // Danach darf nur noch ein Parameter folgen ("; charset=utf-8"),
+    // damit "application/jsonx" nicht durchrutscht.
+    return ct[n] == '\0' || ct[n] == ';' || ct[n] == ' ';
+}
+
+static bool origin_is_self(httpd_req_t *req) {
+    char origin[128];
+    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK)
+        return true;   // kein Origin = kein Browser-Cross-Site-Request
+    char host[64];
+    if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK)
+        return false;
+    // "http://host[:port]" — Schema abschneiden und mit Host vergleichen
+    const char *o = strstr(origin, "://");
+    o = o ? o + 3 : origin;
+    return strcmp(o, host) == 0;
+}
+
+// ESP_OK = durchgelassen; sonst wurde bereits eine Fehlerantwort gesendet.
+static esp_err_t require_write_access(httpd_req_t *req, bool needs_json_body) {
+    if (require_auth(req) != ESP_OK) return ESP_FAIL;
+    if (!origin_is_self(req)) {
+        ESP_LOGW(TAG, "Schreibzugriff mit fremdem Origin abgelehnt");
+        httpd_resp_set_status(req, "403 Forbidden");
+        httpd_resp_sendstr(req, "Fremder Origin");
+        return ESP_FAIL;
+    }
+    if (needs_json_body && !content_type_is_json(req)) {
+        ESP_LOGW(TAG, "Schreibzugriff ohne application/json abgelehnt");
+        httpd_resp_set_status(req, "415 Unsupported Media Type");
+        httpd_resp_sendstr(req, "Content-Type muss application/json sein");
+        return ESP_FAIL;
+    }
+    return ESP_OK;
 }
 
 // ===== Hilfsfunktion: Datei aus SPIFFS streamen =====
@@ -196,7 +256,6 @@ static esp_err_t handler_config_get(httpd_req_t *req) {
     cJSON_Delete(j);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, body);
     free(body);
     return ESP_OK;
@@ -204,7 +263,7 @@ static esp_err_t handler_config_get(httpd_req_t *req) {
 
 // ===== POST /api/config =====
 static esp_err_t handler_config_post(httpd_req_t *req) {
-    if (require_auth(req) != ESP_OK) return ESP_OK;
+    if (require_write_access(req, true) != ESP_OK) return ESP_OK;
     // static: 4 KB passen schlecht in den 8-KB-httpd-Stack; der Server
     // verarbeitet Requests sequentiell, daher kein Race.
     static char buf[4096];
@@ -392,7 +451,6 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
         strncpy(panel_pass, cfg.panelPass, sizeof(panel_pass) - 1);
         panel_pass[sizeof(panel_pass) - 1] = '\0';
     }
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_set_type(req, "application/json");
     if (err != ESP_OK) {
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "NVS save failed");
@@ -426,7 +484,6 @@ static esp_err_t handler_departures_get(httpd_req_t *req) {
     cJSON_Delete(j);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, body);
     free(body);
     return ESP_OK;
@@ -434,9 +491,10 @@ static esp_err_t handler_departures_get(httpd_req_t *req) {
 
 // ===== POST /api/restart =====
 static esp_err_t handler_restart(httpd_req_t *req) {
-    if (require_auth(req) != ESP_OK) return ESP_OK;
+    // Kein JSON-Body noetig, aber derselbe Origin-Riegel: sonst genuegt ein
+    // <form>-Submit von einer fremden Seite, um das Geraet neu zu starten.
+    if (require_write_access(req, false) != ESP_OK) return ESP_OK;
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, "{\"ok\":true}");
     ESP_LOGI(TAG, "Neustart per Web-Panel");
     // Response noch ausliefern lassen (gleiches Muster wie AP-Mode-Restart)
@@ -498,7 +556,6 @@ static esp_err_t handler_status_get(httpd_req_t *req) {
     cJSON_Delete(j);
 
     httpd_resp_set_type(req, "application/json");
-    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, body ? body : "{}");
     free(body);
     return ESP_OK;

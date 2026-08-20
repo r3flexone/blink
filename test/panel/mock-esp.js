@@ -5,6 +5,7 @@ const PANEL = path.join(__dirname, '..', '..', 'main', 'spiffs', 'index.html');
 
 let mode = process.env.MOCK_MODE || 'ok';   // ok | cfgfail
 let saved = null;
+let lastReject = '';
 
 const cfg = {
   timeWindows: [{startH:6,startM:45,endH:7,endM:0},{startH:17,startM:0,endH:17,endM:30}],
@@ -41,10 +42,21 @@ http.createServer((req, res) => {
     return j(cfg);
   }
   if (req.url === '/api/config' && req.method === 'POST') {
-    let b=''; req.on('data',c=>b+=c); req.on('end',()=>{ saved=b; j({ok:true}); });
+    // Spiegelt require_write_access() der Firmware: ohne application/json bzw.
+    // mit fremdem Origin lehnt das Geraet den Schreibzugriff ab (CSRF-Schutz).
+    // Steht die Regel hier auch, faellt es im Test auf, wenn das Panel den
+    // Content-Type verliert — sonst pruefte der Test nur den Mock.
+    if (!/^application\/json\s*(;|$)/i.test(req.headers['content-type'] || '')) {
+      lastReject = 'content-type'; res.writeHead(415); return res.end('nur application/json');
+    }
+    const origin = req.headers['origin'];
+    if (origin && origin.replace(/^https?:\/\//, '') !== req.headers['host']) {
+      lastReject = 'origin'; res.writeHead(403); return res.end('fremder Origin');
+    }
+    let b=''; req.on('data',c=>b+=c); req.on('end',()=>{ saved=b; lastReject=''; j({ok:true}); });
     return;
   }
   if (req.url.startsWith('/_mode')) { mode = req.url.split('=')[1]; return j({mode}); }
-  if (req.url === '/_saved')  return j({body: saved});
+  if (req.url === '/_saved')  return j({body: saved, reject: lastReject});
   res.writeHead(404); res.end();
 }).listen(8099, () => console.log('mock auf 8099, mode=' + mode));

@@ -63,6 +63,10 @@ async function withServer(mode, fn) {
     await page.locator('#save-btn').click();
     await sleep(600);
     const body = await (await fetch('http://127.0.0.1:8099/_saved')).json();
+    // Der Mock lehnt wie die Firmware ohne application/json bzw. mit fremdem
+    // Origin ab (CSRF-Schutz). body.body bleibt dann null.
+    check('POST erfüllt den CSRF-Riegel des Geräts', body.body !== null && !body.reject,
+          'abgelehnt wegen: ' + body.reject);
     const sent = JSON.parse(body.body);
     check('POST enthält echte Werte', sent.station === 'Bern' && sent.sleepMaxMin === 90
           && sent.timeWindows.length === 2, JSON.stringify(sent).slice(0,160));
