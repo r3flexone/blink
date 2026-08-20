@@ -20,7 +20,6 @@ static const char *TAG = "sbb";
 #define WIFI_FAIL_BIT      BIT1
 #define MAX_RETRY          5
 #define HTTP_BUF_SIZE      32768
-#define DEP_COUNT          4
 
 static EventGroupHandle_t wifi_event_group;
 static int retry_count = 0;
@@ -74,7 +73,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
     if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        // Sonst meldet sbb_wifi_reconnect() weiter "verbunden" und tut nichts
+        // Sonst meldet sbb_wifi_is_connected() weiter "verbunden"
         wifi_ready = false;
         if (retry_count < MAX_RETRY) {
             esp_wifi_connect();
@@ -131,6 +130,8 @@ void sbb_wifi_init(const char *ssid, const char *password)
 
 bool sbb_wifi_is_ap_mode(void) { return wifi_ap_mode; }
 
+bool sbb_wifi_is_connected(void) { return wifi_ready; }
+
 bool sbb_wifi_get_ip(char *out, size_t len)
 {
     if (!out || len == 0) return false;
@@ -149,20 +150,26 @@ int sbb_wifi_get_rssi(void)
     return ap.rssi;
 }
 
-bool sbb_wifi_reconnect(void)
+void sbb_wifi_reconnect_start(void)
 {
-    if (wifi_ready) return true;
-    if (!wifi_initialised) return false;
+    if (wifi_ready || !wifi_initialised) return;
     // Im AP-Modus gibt es kein STA-Interface — esp_wifi_connect() würde nur
-    // Fehler loggen und den Aufrufer 15 s blockieren.
-    if (wifi_ap_mode) return false;
+    // Fehler loggen.
+    if (wifi_ap_mode) return;
     ESP_LOGI(TAG, "WiFi Reconnect...");
     retry_count = 0;
     xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT | WIFI_FAIL_BIT);
     esp_wifi_connect();
+}
+
+bool sbb_wifi_wait_connected(int timeout_ms)
+{
+    if (wifi_ready) return true;
+    if (!wifi_initialised || wifi_ap_mode) return false;
     EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                           pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
+                                           pdFALSE, pdFALSE,
+                                           pdMS_TO_TICKS((uint32_t)timeout_ms));
     return (bits & WIFI_CONNECTED_BIT) != 0;
 }
 

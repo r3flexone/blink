@@ -412,7 +412,7 @@ static esp_err_t handler_departures_get(httpd_req_t *req) {
     cJSON_AddNumberToObject(j, "ageS",
         g_last_deps_time ? (double)(now - g_last_deps_time) : -1);
     cJSON *arr = cJSON_AddArrayToObject(j, "departures");
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < DEP_COUNT; i++) {
         if (!g_last_deps[i].valid) continue;
         cJSON *d = cJSON_CreateObject();
         cJSON_AddStringToObject(d, "time",        g_last_deps[i].time);
@@ -451,9 +451,14 @@ static esp_err_t handler_restart(httpd_req_t *req) {
 // oder bei RTC-Drift anders als die Uhr auf dem Display.
 static esp_err_t handler_status_get(httpd_req_t *req) {
     if (require_auth(req) != ESP_OK) return ESP_OK;
-    // wifi = im STA-Modus verbunden (kein AP-Fallback),
+    // wifi = STA-Verbindung steht wirklich (IP bezogen). Frueher stand hier
+    // !sbb_wifi_is_ap_mode(), also nur "kein AP-Fallback" — bricht die
+    // Verbindung im Betrieb weg, meldete das Panel weiter gruen "Verbunden",
+    // waehrend direkt darunter lastError "Kein WLAN" stand.
+    // apMode trennt die beiden Offline-Faelle fuer die Anzeige.
     // ntp = gueltige Systemzeit vorhanden (tm_year >= 100 == ab Jahr 2000).
-    bool wifi = !sbb_wifi_is_ap_mode();
+    bool ap_mode = sbb_wifi_is_ap_mode();
+    bool wifi = sbb_wifi_is_connected();
     time_t now; struct tm ti;
     time(&now); localtime_r(&now, &ti);
     bool ntp = (ti.tm_year >= 100);
@@ -462,8 +467,9 @@ static esp_err_t handler_status_get(httpd_req_t *req) {
     sbb_wifi_get_ip(ip, sizeof(ip));
 
     cJSON *j = cJSON_CreateObject();
-    cJSON_AddBoolToObject(j, "wifi", wifi);
-    cJSON_AddBoolToObject(j, "ntp",  ntp);
+    cJSON_AddBoolToObject(j, "wifi",   wifi);
+    cJSON_AddBoolToObject(j, "apMode", ap_mode);
+    cJSON_AddBoolToObject(j, "ntp",    ntp);
     cJSON_AddStringToObject(j, "ip", ip);
     cJSON_AddNumberToObject(j, "rssi", sbb_wifi_get_rssi());
     cJSON_AddNumberToObject(j, "heapKb", (double)(esp_get_free_heap_size() / 1024));

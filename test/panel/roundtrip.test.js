@@ -39,7 +39,7 @@ let cfg, saved, savedLen, clampMode = false;
 const srv = http.createServer((q,s)=>{
   const j=o=>{s.writeHead(200,{'Content-Type':'application/json'});s.end(JSON.stringify(o));};
   if(q.url==='/'){s.writeHead(200,{'Content-Type':'text/html'});return s.end(fs.readFileSync(PANEL));}
-  if(q.url==='/api/status') return j({wifi:true,ntp:true,ip:'10.0.0.5',rssi:-44,heapKb:130,
+  if(q.url==='/api/status') return j({wifi:true,apMode:false,ntp:true,ip:'10.0.0.5',rssi:-44,heapKb:130,
       uptimeS:60,time:'08:00:00',weekday:2,inWindow:false,runForever:true,activeUntilS:-1,lastError:''});
   if(q.url==='/api/departures') return j({ageS:-1,departures:[]});
   if(q.url==='/api/config'&&q.method==='GET') return j(cfg);

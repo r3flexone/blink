@@ -832,8 +832,12 @@ async function checkEsp() {
       lbl.textContent = 'Online';
       const s = await r.json();
       _status = s;
-      setWifiLabel(s.wifi ? 'Verbunden' : 'AP-Modus (kein WLAN)',
-                   s.wifi ? '#22C55E' : '#F59E0B');
+      // Drei Zustaende: verbunden / AP-Fallback / STA-Verbindung abgerissen.
+      // "nicht verbunden" hiess frueher pauschal AP-Modus, was bei einem
+      // Verbindungsabbruch im Betrieb schlicht falsch war.
+      if (s.wifi)          setWifiLabel('Verbunden', '#22C55E');
+      else if (s.apMode)   setWifiLabel('AP-Modus (kein WLAN)', '#F59E0B');
+      else                 setWifiLabel('WLAN getrennt', '#EF4444');
       setDeviceTime(s.time);
       updateClock();
       renderDeviceState(s);
@@ -865,7 +869,8 @@ function renderNetInfo(s) {
     if (!s)            net.textContent = '—';
     else if (s.ip)     net.innerHTML = 'IP <b>' + esc(s.ip) + '</b>' +
                                        (s.rssi ? ' · ' + s.rssi + ' dBm' : '');
-    else               net.textContent = 'Keine IP (AP-Modus: 192.168.4.1)';
+    else if (s.apMode) net.textContent = 'Keine IP (AP-Modus: 192.168.4.1)';
+    else               net.textContent = 'Keine IP — WLAN getrennt';
   }
   if (dev) {
     dev.textContent = s

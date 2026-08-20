@@ -24,7 +24,7 @@ const cfg = {
 };
 
 const status = {
-  wifi:true, ntp:true, ip:'192.168.1.42', rssi:-58, heapKb:142, uptimeS:3725,
+  wifi:true, apMode:false, ntp:true, ip:'192.168.1.42', rssi:-58, heapKb:142, uptimeS:3725,
   time:'06:52:07', weekday:3, inWindow:true, runForever:false,
   activeUntilS:480, lastError:'HTTP 404 — Station \'Basle SBB\' falsch geschrieben?',
 };

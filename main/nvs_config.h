@@ -3,6 +3,11 @@
 #include <stdint.h>
 #include "esp_err.h"
 
+// Feste Array-Grenzen der Konfiguration. Standen bisher als nackte 4 bzw. 8
+// verteilt in nvs_config.c, http_server.c und main.c.
+#define MAX_TIME_WINDOWS  8
+#define MAX_DEST_FILTERS  4
+
 // ===== Zeitfenster-Eintrag =====
 typedef struct {
     int startH;
@@ -14,9 +19,9 @@ typedef struct {
 // ===== Haupt-Konfigurationsstruktur =====
 typedef struct {
 
-    // --- Zeitfenster (bis zu 8) ---
-    time_window_t timeWindows[8];
-    int           timeWindowCount;   // 1–8
+    // --- Zeitfenster ---
+    time_window_t timeWindows[MAX_TIME_WINDOWS];
+    int           timeWindowCount;   // 1–MAX_TIME_WINDOWS
 
     // --- Button ---
     int  buttonActiveMin;            // Minuten nach kurzem Druck
@@ -32,7 +37,7 @@ typedef struct {
     char panelPass[32];              // Web-Panel-Login (leer = kein Login, Default)
 
     // --- Ziel-Filter (Substring, case-insensitive) ---
-    char destFilters[4][32];
+    char destFilters[MAX_DEST_FILTERS][32];
     int  destFilterCount;            // 0 = alle Züge
 
     // --- Schlaf ---

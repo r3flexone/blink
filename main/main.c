@@ -29,7 +29,7 @@ static blink_config_t cfg;
 volatile bool g_cfg_dirty = false;
 
 // Für GET /api/departures und /api/status (Deklarationen in http_server.h)
-SbbDeparture g_last_deps[4];
+SbbDeparture g_last_deps[DEP_COUNT];
 time_t g_last_deps_time = 0;
 volatile bool g_in_window = false;
 volatile bool g_run_forever = false;
@@ -37,6 +37,8 @@ time_t g_active_end_time = 0;
 
 #define OLED_WIDTH  128
 #define OLED_HEIGHT  64
+// Der 5x7-Font belegt inkl. Spalte Abstand 6 px pro Zeichen.
+#define OLED_COLS   (OLED_WIDTH / 6)
 
 // pdMS_TO_TICKS() rechnet intern in 32 Bit (ms * configTICK_RATE_HZ) und
 // läuft ab ca. 11.9 h über — ein Zeitfenster von 23 h oder ein OLED-Invert-
@@ -74,10 +76,10 @@ static void led_set(uint8_t r, uint8_t g, uint8_t b) {
     led_strip_set_pixel(led_strip, 0, r/16, g/16, b/16);
     led_strip_refresh(led_strip);
 }
-// Schlimmster Status aller 4 gültigen Züge: Ausfall > grosse > kleine Verspätung > OK
-static void led_show_worst_status(const SbbDeparture deps[4]) {
+// Schlimmster Status aller gültigen Züge: Ausfall > grosse > kleine Verspätung > OK
+static void led_show_worst_status(const SbbDeparture deps[DEP_COUNT]) {
     int worst = 0;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < DEP_COUNT; i++) {
         if (!deps[i].valid) continue;
         int s = 0;
         if (deps[i].cancelled)                       s = 3;
@@ -225,6 +227,29 @@ static int draw_char_utf8(int x, int y, const unsigned char *s, int *consumed) {
     if (ch >= 32 && ch <= 90) { draw_glyph(x,y,font5x7[ch-32]); return x+6; }
     return x + 6;
 }
+// Kopiert hoechstens max_glyphs darstellbare Zeichen aus src nach dst.
+// snprintf("%.Ns") zaehlt Bytes: "Delemont" mit Akzent belegt 9 Bytes, aber nur
+// 8 Zellen — die Zeile wurde damit mal zu kurz, mal (mit Gleis-Suffix) breiter
+// als die 128 px des Displays. draw_char_utf8() rendert jede UTF-8-Sequenz als
+// genau eine 6-px-Zelle, also wird hier genauso gezaehlt.
+static void copy_glyphs(char *dst, size_t dst_size, const char *src, int max_glyphs) {
+    size_t o = 0;
+    int glyphs = 0;
+    for (size_t i = 0; src[i] && glyphs < max_glyphs; ) {
+        unsigned char c = (unsigned char)src[i];
+        size_t seq = 1;
+        if      ((c & 0xE0) == 0xC0) seq = 2;
+        else if ((c & 0xF0) == 0xE0) seq = 3;
+        else if ((c & 0xF8) == 0xF0) seq = 4;
+        // Am Stringende abgeschnittene Sequenz nicht halb uebernehmen
+        for (size_t k = 1; k < seq; k++) if (!src[i + k]) { seq = 1; break; }
+        if (o + seq >= dst_size) break;
+        memcpy(dst + o, src + i, seq);
+        o += seq; i += seq; glyphs++;
+    }
+    dst[o] = 0;
+}
+
 static void draw_text(int x, int y, const char *text) {
     const unsigned char *s = (const unsigned char *)text;
     while (*s) {
@@ -249,44 +274,50 @@ static void draw_header(const char *title, bool stale) {
     for (int x = 0; x < 128; x++) draw_pixel(x, 9, true);
 }
 
-static void display_departures(SbbDeparture deps[4], bool stale) {
+// Textzeile y invertieren (Ausfall-Markierung)
+static void invert_row(int y) {
+    for (int px = 0; px < OLED_WIDTH; px++)
+        for (int py = y; py < y + 8; py++) {
+            bool cur = (framebuffer[px + (py/8)*OLED_WIDTH] >> (py%8)) & 1;
+            draw_pixel(px, py, !cur);
+        }
+}
+
+static void display_departures(SbbDeparture deps[DEP_COUNT], bool stale) {
     draw_header(cfg.station, stale);
-    int yp[] = {14, 27, 40, 53};
-    for (int i = 0; i < 4; i++) {
+    static const int yp[DEP_COUNT] = {14, 27, 40, 53};
+    for (int i = 0; i < DEP_COUNT; i++) {
         if (!deps[i].valid) continue;
         int y = yp[i];
-        char line[32];
+        char line[64];
+
         if (deps[i].cancelled) {
             snprintf(line, sizeof(line), "%s AUSFALL", deps[i].time);
             draw_text(0, y, line);
-            for (int px = 0; px < 128; px++)
-                for (int py = y; py < y+8; py++) {
-                    bool cur = (framebuffer[px+(py/8)*OLED_WIDTH] >> (py%8)) & 1;
-                    draw_pixel(px, py, !cur);
-                }
-        } else if (deps[i].delay > 0) {
-            int dly = deps[i].delay;
-            if (dly > 99) dly = 99;
-            char dlystr[4];
-            snprintf(dlystr, sizeof(dlystr), "%d", dly);
-            if (deps[i].platform[0]) {
-                snprintf(line, sizeof(line), "%s+%s %.10s G%.2s",
-                         deps[i].time, dlystr, deps[i].destination, deps[i].platform);
-            } else {
-                snprintf(line, sizeof(line), "%s+%s %.14s",
-                         deps[i].time, dlystr, deps[i].destination);
-            }
-            draw_text(0, y, line);
-        } else {
-            if (deps[i].platform[0]) {
-                snprintf(line, sizeof(line), "%s %.12s G%.2s",
-                         deps[i].time, deps[i].destination, deps[i].platform);
-            } else {
-                snprintf(line, sizeof(line), "%s %.15s",
-                         deps[i].time, deps[i].destination);
-            }
-            draw_text(0, y, line);
+            invert_row(y);
+            continue;
         }
+
+        // Prefix "HH:MM" bzw. "HH:MM+7", Suffix " G12" — beides reines ASCII,
+        // also ist strlen() hier zugleich die Zellenzahl. Was davon uebrig
+        // bleibt, bekommt das Ziel; frueher standen feste %.Ns-Grenzen da, die
+        // zusammen mit dem Gleis-Suffix ueber die 21 Zellen hinausliefen und
+        // die letzte Gleisziffer abschnitten.
+        char prefix[12], suffix[8] = "";
+        if (deps[i].delay > 0) {
+            int dly = deps[i].delay > 99 ? 99 : deps[i].delay;
+            snprintf(prefix, sizeof(prefix), "%s+%d", deps[i].time, dly);
+        } else {
+            snprintf(prefix, sizeof(prefix), "%s", deps[i].time);
+        }
+        if (deps[i].platform[0])
+            snprintf(suffix, sizeof(suffix), " G%.2s", deps[i].platform);
+
+        int budget = OLED_COLS - (int)strlen(prefix) - 1 - (int)strlen(suffix);
+        char dest[sizeof(deps[i].destination)];
+        copy_glyphs(dest, sizeof(dest), deps[i].destination, budget > 0 ? budget : 0);
+        snprintf(line, sizeof(line), "%s %s%s", prefix, dest, suffix);
+        draw_text(0, y, line);
     }
     oled_flush();
 }
@@ -388,6 +419,24 @@ static void wifi_connect_from_cfg(void) {
     sbb_wifi_init(ssid, pass);
 }
 
+// Reconnect anstossen und in 1-s-Scheiben darauf warten, dazwischen den Taster
+// pollen. Ein einzelner 15-s-Block in sbb_wifi_reconnect() liess das Geraet bei
+// WLAN-Problemen so lange nicht auf "Schlafen" reagieren.
+#define WIFI_RECONNECT_TIMEOUT_S 15
+static void wifi_reconnect_interruptible(bool *force_sleep) {
+    if (sbb_wifi_is_connected()) return;
+    sbb_wifi_reconnect_start();
+    for (int i = 0; i < WIFI_RECONNECT_TIMEOUT_S; i++) {
+        if (sbb_wifi_wait_connected(1000)) return;
+        if (button_pressed()) {
+            ESP_LOGI(TAG, "Button während Reconnect → Schlaf");
+            wait_button_release(5000);
+            *force_sleep = true;
+            return;
+        }
+    }
+}
+
 // ===== NTP =====
 static bool ntp_sync(void) {
     esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
@@ -420,15 +469,30 @@ static void log_board_info(void) {
 }
 
 // ===== SCHLAF-INFO =====
+static const char *WEEKDAY_ABBR[7] = {"SO","MO","DI","MI","DO","FR","SA"};
+
 static void show_sleep_info(int sleep_min) {
     if (!oled_ok) return;
-    time_t now; struct tm ti;
-    time(&now); localtime_r(&now, &ti);
-    int wake_min = (ti.tm_hour * 60 + ti.tm_min + sleep_min) % (24 * 60);
     draw_header("SCHLAFE", false);
+
+    time_t now; struct tm nt;
+    time(&now); localtime_r(&now, &nt);
     char info[24];
-    snprintf(info, sizeof(info), "BIS %02d:%02d", wake_min / 60, wake_min % 60);
-    draw_text(0, 20, info);
+    // Ohne gueltige RTC-Zeit waere jede "BIS HH:MM"-Angabe frei erfunden
+    // (sie kaeme aus dem Epoch-Startwert) — dann nur die Dauer zeigen.
+    if (nt.tm_year >= 100) {
+        time_t wake = now + (time_t)sleep_min * 60;
+        struct tm wt; localtime_r(&wake, &wt);
+        // Wochentag dazu, sobald der Schlaf ueber Mitternacht reicht: beim
+        // Wochenend-Schlaf sagte "BIS 05:00" sonst nicht, welcher Tag gemeint war.
+        if (wt.tm_wday == nt.tm_wday && sleep_min < 24 * 60)
+            snprintf(info, sizeof(info), "BIS %02d:%02d", wt.tm_hour, wt.tm_min);
+        else
+            snprintf(info, sizeof(info), "BIS %s %02d:%02d",
+                     WEEKDAY_ABBR[wt.tm_wday], wt.tm_hour, wt.tm_min);
+        draw_text(0, 20, info);
+    }
+
     if (sleep_min >= 60) {
         snprintf(info, sizeof(info), "(%dH %dMIN)", sleep_min / 60, sleep_min % 60);
     } else {
@@ -437,6 +501,59 @@ static void show_sleep_info(int sleep_min) {
     draw_text(0, 32, info);
     oled_flush();
     vTaskDelay(pdMS_TO_TICKS(2000));
+}
+
+// ===== ZEITFENSTER =====
+// Liegt cur_min in einem konfigurierten Fenster? Setzt *rem_min (falls != NULL)
+// auf die Minuten bis zum Fensterende. Ende <= Start heisst "ueber Mitternacht".
+static bool find_active_window(const blink_config_t *c, int cur_min, int *rem_min) {
+    for (int i = 0; i < c->timeWindowCount; i++) {
+        int ws = c->timeWindows[i].startH * 60 + c->timeWindows[i].startM;
+        int we = c->timeWindows[i].endH   * 60 + c->timeWindows[i].endM;
+        bool inside = (we > ws) ? (cur_min >= ws && cur_min < we)
+                                : (cur_min >= ws || cur_min < we);
+        if (!inside) continue;
+        if (rem_min) {
+            int rem = we - cur_min;
+            if (rem <= 0) rem += 24 * 60;   // Ende liegt am Folgetag
+            *rem_min = rem;
+        }
+        return true;
+    }
+    return false;
+}
+
+// Minuten bis zum naechsten Fensterstart, der auch wirklich aktiv wird.
+// Bei weekdaysOnly muessen Sa/So uebersprungen werden: sonst rechnete das
+// Geraet am Samstag "noch 30 Min bis 06:45" aus und zeigte das auch an,
+// obwohl dieses Fenster am Wochenende gar nicht greift.
+static int minutes_to_next_window(const blink_config_t *c, const struct tm *ti) {
+    int cur_min = ti->tm_hour * 60 + ti->tm_min;
+    int best = 7 * 24 * 60;
+    for (int day = 0; day <= 7; day++) {
+        int wday = (ti->tm_wday + day) % 7;
+        if (c->weekdaysOnly && (wday == 0 || wday == 6)) continue;
+        for (int i = 0; i < c->timeWindowCount; i++) {
+            int ws = c->timeWindows[i].startH * 60 + c->timeWindows[i].startM;
+            int diff = day * 24 * 60 + ws - cur_min;
+            if (diff > 0 && diff < best) best = diff;
+        }
+    }
+    return best;
+}
+
+// g_in_window fuer GET /api/status nachfuehren. Muss regelmaessig laufen: bei
+// run_forever laeuft das Geraet ueber das Fensterende hinaus weiter, und ein
+// Config-Reload kann das gerade aktive Fenster entfernt haben. Frueher wurde
+// das Flag genau einmal beim Start gesetzt und nie wieder — das Panel meldete
+// dann bis zum Neustart "Im aktiven Zeitfenster".
+static void publish_in_window(void) {
+    time_t now; struct tm ti;
+    time(&now); localtime_r(&now, &ti);
+    if (ti.tm_year < 100) { g_in_window = false; return; }
+    bool weekend_skip = cfg.weekdaysOnly && (ti.tm_wday == 0 || ti.tm_wday == 6);
+    g_in_window = !weekend_skip &&
+                  find_active_window(&cfg, ti.tm_hour * 60 + ti.tm_min, NULL);
 }
 
 // ===== ZEITFENSTER-VALIDIERUNG =====
@@ -550,39 +667,15 @@ void app_main(void) {
     bool weekend_skip = cfg.weekdaysOnly && is_weekend;
 
     int active_rem_min = 0;   // Minuten bis zum Fenster-Ende (wrap-fähig)
-    bool in_window = false;
-    if (time_valid && !weekend_skip) {
-        for (int i = 0; i < cfg.timeWindowCount; i++) {
-            int ws = cfg.timeWindows[i].startH * 60 + cfg.timeWindows[i].startM;
-            int we = cfg.timeWindows[i].endH * 60 + cfg.timeWindows[i].endM;
-            bool inside;
-            if (we > ws) {                 // normales Fenster innerhalb eines Tages
-                inside = (cur_min >= ws && cur_min < we);
-            } else {                       // Fenster über Mitternacht (we <= ws)
-                inside = (cur_min >= ws || cur_min < we);
-            }
-            if (inside) {
-                in_window = true;
-                g_in_window = true;
-                int rem = we - cur_min;
-                if (rem <= 0) rem += 24 * 60;   // Ende liegt am Folgetag
-                active_rem_min = rem;
-                break;
-            }
-        }
-    }
+    bool in_window = time_valid && !weekend_skip &&
+                     find_active_window(&cfg, cur_min, &active_rem_min);
+    g_in_window = in_window;
 
     if (!in_window && !woken_by_button && cfg.sleepEnabled && !ap_mode) {
         uint64_t sleep_us;
         int d;
         if (time_valid) {
-            d = 24 * 60;
-            for (int i = 0; i < cfg.timeWindowCount; i++) {
-                int ws = cfg.timeWindows[i].startH * 60 + cfg.timeWindows[i].startM;
-                int diff = ws - cur_min;
-                if (diff <= 0) diff += 24 * 60;
-                if (diff < d) d = diff;
-            }
+            d = minutes_to_next_window(&cfg, &ti);
             if (cfg.weekendSleepEnabled && in_weekend_window(&ti, &cfg)) {
                 int end_abs = cfg.weekendEndDay * 24 * 60 + cfg.weekendEndH * 60 + cfg.weekendEndM;
                 int cur_abs = ti.tm_wday * 24 * 60 + cur_min;
@@ -678,13 +771,13 @@ void app_main(void) {
     publish_active_end(active_end);
 
     // Dest-Filter: Pointer-Array aus cfg.destFilters[][] bauen
-    const char *filter_ptrs[4] = {0};
-    for (int i = 0; i < cfg.destFilterCount && i < 4; i++)
+    const char *filter_ptrs[MAX_DEST_FILTERS] = {0};
+    for (int i = 0; i < cfg.destFilterCount && i < MAX_DEST_FILTERS; i++)
         filter_ptrs[i] = cfg.destFilters[i];
 
     // static: aus dem Stack raus (verhindert Stack-Overflow im Main-Task)
-    static SbbDeparture deps[4];
-    static SbbDeparture last_deps[4];
+    static SbbDeparture deps[DEP_COUNT];
+    static SbbDeparture last_deps[DEP_COUNT];
     memset(deps, 0, sizeof(deps));
     memset(last_deps, 0, sizeof(last_deps));
     bool has_cached = false;
@@ -727,10 +820,16 @@ void app_main(void) {
             }
             next_invert = xTaskGetTickCount() +
                 minutes_to_ticks((uint32_t)(cfg.oledInvertMin > 0 ? cfg.oledInvertMin : 1440));
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < MAX_DEST_FILTERS; i++)
                 filter_ptrs[i] = (i < cfg.destFilterCount) ? cfg.destFilters[i] : NULL;
+            // Die Fenster koennen sich gerade geaendert haben — sonst stuende
+            // die Warnung nur im Log des Kaltstarts, also genau dann nicht,
+            // wenn der Nutzer sie gerade verstellt hat.
+            check_window_overlaps();
         }
-        sbb_wifi_reconnect();
+        publish_in_window();
+        wifi_reconnect_interruptible(&force_sleep);
+        if (force_sleep) break;
 
         bool success = false;
         for (int attempt = 0; attempt < cfg.apiRetryCount && !success; attempt++) {
@@ -775,7 +874,7 @@ void app_main(void) {
             int min_to_next = -1;
             time_t n; struct tm nt; time(&n); localtime_r(&n, &nt);
             int cur_m = nt.tm_hour * 60 + nt.tm_min;
-            for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < DEP_COUNT; i++) {
                 if (!deps[i].valid || deps[i].cancelled) continue;
                 int h, m;
                 if (sscanf(deps[i].time, "%d:%d", &h, &m) == 2) {
@@ -826,6 +925,9 @@ void app_main(void) {
                 else if (!success)
                     display_error();
                 redraw_bar(run_forever, active_start, active_end);
+                // Auch hier nachfuehren: zwischen zwei API-Zyklen liegen bis zu
+                // refreshVeryfarSec, so lange soll das Panel nicht veralten.
+                publish_in_window();
                 next_clock = t + pdMS_TO_TICKS(30 * 1000);
             }
             if (t >= next_bar) {

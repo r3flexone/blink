@@ -9,7 +9,7 @@
  * daher ohne Lock — Schreiber ist allein der Main-Task).
  * g_last_deps_time == 0 bedeutet: noch keine erfolgreiche Abfrage.
  */
-extern SbbDeparture g_last_deps[4];
+extern SbbDeparture g_last_deps[DEP_COUNT];
 extern time_t g_last_deps_time;
 
 /**

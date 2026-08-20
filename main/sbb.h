@@ -3,6 +3,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+// Anzahl Abfahrten, die geholt, angezeigt und im Panel gespiegelt werden.
+// Steckte frueher als nackte 4 in sbb.c, main.c und http_server.h.
+#define DEP_COUNT 4
+
 // Eine Abfahrt ab dem konfigurierten Bahnhof
 typedef struct {
     char time[6];           // "HH:MM"
@@ -19,8 +23,17 @@ void sbb_wifi_init(const char *ssid, const char *password);
 // true wenn WiFi-Connect fehlschlug und Gerät im AP-Konfigurationsmodus läuft
 bool sbb_wifi_is_ap_mode(void);
 
-// WiFi neu verbinden falls Verbindung verloren (no-op wenn schon verbunden)
-bool sbb_wifi_reconnect(void);
+// true wenn die STA-Verbindung wirklich steht (IP bezogen). Nicht dasselbe wie
+// !sbb_wifi_is_ap_mode(): bricht die Verbindung im Betrieb weg, bleibt der
+// AP-Modus aus, das Gerät ist aber trotzdem offline.
+bool sbb_wifi_is_connected(void);
+
+// Reconnect anstossen (no-op wenn schon verbunden oder im AP-Modus) und
+// getrennt darauf warten. Die Aufteilung erlaubt es dem Aufrufer, waehrend der
+// Wartezeit weiter den Taster zu pollen — ein einzelner 15-s-Block liesse das
+// Geraet so lange auf den Sleep-Knopf nicht reagieren.
+void sbb_wifi_reconnect_start(void);
+bool sbb_wifi_wait_connected(int timeout_ms);
 
 // Aktuelle STA-IP als "a.b.c.d". Schreibt "" und liefert false wenn nicht
 // verbunden. Für die Status-Anzeige im Panel, wenn mDNS nicht funktioniert.
@@ -33,9 +46,9 @@ int sbb_wifi_get_rssi(void);
 // Zeigt im Panel, warum "API FEHLER" auf dem Display steht.
 const char *sbb_last_error(void);
 
-// Nächste 4 Abfahrten ab jetzt holen.
+// Nächste DEP_COUNT Abfahrten ab jetzt holen.
 //   station:      Bahnhof-Name wie auf sbb.ch (z.B. "Gelterkinden")
 //   dest_filters: Array von Ziel-Teilstrings (case-insensitive)
 //   filter_count: Anzahl Einträge (0 = alle Züge, kein Filter)
-bool sbb_get_departures(const char *station, SbbDeparture results[4],
+bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
                         const char *dest_filters[], int filter_count);
