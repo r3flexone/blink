@@ -252,7 +252,7 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
 
       <!-- LED-FARBEN -->
       <div id="sec-led" class="section">
-        <div class="section-head"><div class="section-title">💡 LED-Farben</div><div class="section-desc">RGB-Farben für jeden Zustand des NeoPixel. Werte werden direkt auf die LED angewendet.</div></div>
+        <div class="section-head"><div class="section-title">💡 LED-Farben</div><div class="section-desc">RGB-Farben für jeden Zustand des NeoPixel, skaliert mit der eingestellten Helligkeit.</div></div>
         <div class="card">
           <div class="card-head"><div class="card-title">Zustands-Farben</div></div>
           <div class="field"><div class="field-meta"><div class="field-label">Pünktlich</div><div class="field-hint">ledOkColor · Standard: grün</div></div><div class="field-ctrl"><input type="color" id="ledOkColor" value="#00FF00"><span class="unit" id="ledOkHex">#00FF00</span></div></div>
@@ -262,7 +262,7 @@ input[type=color]{width:36px;height:28px;padding:2px;border-radius:4px;border:1p
           <div class="field"><div class="field-meta"><div class="field-label">Verbinden / Laden</div><div class="field-hint">ledLoadingColor</div></div><div class="field-ctrl"><input type="color" id="ledLoadingColor" value="#FF8000"><span class="unit" id="ledLoadingHex">#FF8000</span></div></div>
         </div>
         <div class="card">
-          <div class="card-head"><div class="card-title">Fehler-Blinken</div></div>
+          <div class="card-head"><div class="card-title">Helligkeit &amp; Fehler-Blinken</div></div>
           <div class="field"><div class="field-meta"><div class="field-label">Helligkeit</div><div class="field-hint">1–255 · 16 = bisherige Werkseinstellung</div></div><div class="field-ctrl"><input type="number" class="sm" id="ledBrightness" value="16" min="1" max="255"></div></div>
           <div class="field"><div class="field-meta"><div class="field-label">Fehler-Blinken</div><div class="field-hint">Blink-Periode bei Verbindungsfehler (0 = dauerhaft Rot)</div></div><div class="field-ctrl"><input type="number" class="sm" id="ledErrorBlinkMs" value="500" min="0" max="5000"><span class="unit">ms</span></div></div>
         </div>
