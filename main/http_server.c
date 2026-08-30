@@ -356,9 +356,10 @@ static esp_err_t handler_config_post(httpd_req_t *req) {
     #include "config_fields.def"
 
     // --- Sonderfaelle rund um die Passwoerter ---
-    // Geleerte SSID = explizit zurück auf secrets.h. Dann auch das gespeicherte
-    // Passwort verwerfen — sonst entsteht die Kombination "SSID aus secrets.h
-    // + altes NVS-Passwort" und der Connect schlägt fehl.
+    // Geleerte SSID = zurück auf den Compile-Time-Fallback, und wo es keinen
+    // gibt (der Normalfall, secrets.h ist optional) in den AP-Modus. Dann auch
+    // das gespeicherte Passwort verwerfen — sonst entsteht die Kombination
+    // "leere/fremde SSID + altes NVS-Passwort" und der Connect schlägt fehl.
     {
         cJSON *v = cJSON_GetObjectItem(j, "ssid");
         if (cJSON_IsString(v) && v->valuestring && !v->valuestring[0])

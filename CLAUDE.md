@@ -17,13 +17,12 @@ ESP32-S3 SBB (Swiss Federal Railways) Departure Monitor. The device:
 Standard ESP-IDF v6.x project (also builds on v5.3+, where `driver` was split into the `esp_driver_*` components). Target is `esp32s3`.
 
 ```
-# one-time: create WiFi credentials (gitignored)
-cp main/secrets.h.example main/secrets.h   # edit WIFI_SSID / WIFI_PASS
-
 idf.py set-target esp32s3
 idf.py build
 idf.py -p PORT flash monitor               # Ctrl-] to exit monitor
 ```
+
+**No `secrets.h` is needed** — a fresh clone builds as-is. `main.c` pulls it in via `__has_include` and falls back to empty credentials, which sends the device straight to AP mode (`SBB-Monitor` / `192.168.4.1`) where WiFi is entered in the web panel and stored in NVS. That include used to be unconditional, so a clone would not compile until you hand-created a gitignored file for a fallback nobody uses in normal operation. Copy `main/secrets.h.example` to `main/secrets.h` only if you want credentials compiled in; NVS always wins over it.
 
 On first flash or after partition table changes: `idf.py fullclean` before build.
 
@@ -64,7 +63,7 @@ All tunables live in `blink_config_t` (`nvs_config.h`). They are:
 - Loaded from NVS at startup via `nvs_config_load()`.
 - Editable at runtime via `http://sbb-monitor.local` while the device is active.
 - Persisted to NVS on save; survive deep sleep and reboots.
-- `secrets.h` (`WIFI_SSID` / `WIFI_PASS`) is a compile-time fallback if NVS has no credentials.
+- `secrets.h` (`WIFI_SSID` / `WIFI_PASS`) is an *optional* compile-time fallback if NVS has no credentials. Absent (the normal case) the fallback is `""`, and `sbb_wifi_init()` short-circuits to AP mode instead of burning the 15 s connect timeout first.
 
 **Adding a new tunable is two edits**: the field in `blink_config_t`, and one line in `config_fields.def`. Defaults, range clamping, NVS load/save and both HTTP handlers are loops over that table. The panel still needs its own three lines (input element, `saveConfig()`, `loadConfig()`).
 

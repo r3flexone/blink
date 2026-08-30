@@ -47,6 +47,8 @@ const char *sbb_last_error(void) { return last_error; }
 
 static void sbb_start_ap(void)
 {
+    // Fehler ignorieren: aus dem "keine Zugangsdaten"-Pfad heraus wurde der
+    // Treiber nie gestartet, dann ist das hier ein No-op.
     esp_wifi_stop();
     esp_netif_create_default_wifi_ap();
     wifi_config_t ap_cfg = {
@@ -111,6 +113,16 @@ void sbb_wifi_init(const char *ssid, const char *password)
                                         &wifi_event_handler, NULL, &ia);
     esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
                                         &wifi_event_handler, NULL, &ig);
+
+    // Ohne SSID gar nicht erst verbinden: der Connect-Versuch braeuchte die
+    // vollen 15 s Timeout, um dann doch im AP-Modus zu landen. Genau das ist
+    // der Zustand eines frisch geflashten Geraets ohne secrets.h — die
+    // Einrichtung soll dort sofort erreichbar sein.
+    if (!ssid || !ssid[0]) {
+        ESP_LOGW(TAG, "Keine WLAN-Zugangsdaten hinterlegt — direkt AP-Modus");
+        sbb_start_ap();
+        return;
+    }
 
     wifi_config_t wifi_config = {0};
     strncpy((char *)wifi_config.sta.ssid, ssid, sizeof(wifi_config.sta.ssid) - 1);

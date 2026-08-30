@@ -27,15 +27,14 @@ Alle Pins sind über das Web-Panel oder NVS konfigurierbar.
 
 ## Einrichtung
 
-```bash
-# 1. WiFi-Zugangsdaten eintragen (wird von Git ignoriert)
-cp main/secrets.h.example main/secrets.h
-# WIFI_SSID und WIFI_PASS in secrets.h anpassen
+Es sind **keine Vorbereitungen nötig** — das Repo lässt sich direkt nach dem
+Klonen bauen und flashen. Das WLAN wird danach am Gerät eingerichtet.
 
-# 2. Ziel-Chip setzen
+```bash
+# 1. Ziel-Chip setzen
 idf.py set-target esp32s3
 
-# 3. Bauen und flashen
+# 2. Bauen und flashen
 idf.py build flash monitor   # Ctrl-] zum Beenden
 ```
 
@@ -70,9 +69,22 @@ Die **Status-Seite** zeigt den Zustand, den das Gerät selbst meldet — Geräte
 
 Einstellungen werden in NVS gespeichert und überleben Neustarts und Deep Sleep. Die meisten greifen sofort — die Hauptschleife lädt die Konfiguration direkt nach dem Speichern neu. Änderungen an WLAN-Zugangsdaten, GPIO-Belegung und I²C-Adresse brauchen einen Neustart (Button oben rechts im Panel).
 
-### secrets.h (Fallback)
+### Erste Einrichtung (WLAN)
 
-`WIFI_SSID` und `WIFI_PASS` in `main/secrets.h` werden verwendet, solange im Web-Panel keine eigenen Zugangsdaten gespeichert sind.
+Ein frisch geflashtes Gerät hat keine Zugangsdaten und startet deshalb sofort
+im **AP-Modus**: Es spannt ein offenes WLAN `SBB-Monitor` auf, das Panel ist
+unter `http://192.168.4.1` erreichbar. Dort WLAN eintragen, speichern — das
+Gerät startet neu und verbindet sich. Die Zugangsdaten liegen danach in NVS und
+überleben Neustarts und Deep Sleep. Dasselbe passiert automatisch, wenn das
+hinterlegte WLAN später nicht mehr erreichbar ist, etwa nach einem
+Router-Wechsel.
+
+### secrets.h (optionaler Fallback)
+
+`main/secrets.h` ist **nicht erforderlich**. Wer die Zugangsdaten trotzdem fest
+einkompilieren will, kopiert `main/secrets.h.example` nach `main/secrets.h` und
+trägt `WIFI_SSID` / `WIFI_PASS` ein; die Datei wird von Git ignoriert. In NVS
+gespeicherte Zugangsdaten haben immer Vorrang.
 
 ## Funktionsweise
 

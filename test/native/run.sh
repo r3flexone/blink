@@ -16,14 +16,6 @@ CC=${CC:-gcc}
 CFLAGS="-std=gnu99 -I$HERE/idfstub -I$ROOT/main"
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-# secrets.h faellt unter .gitignore und fehlt im frischen Clone. Fuer die Tests
-# genuegt ein Platzhalter — und weil idfstub/ vor main/ im Include-Pfad steht,
-# geraten echte Zugangsdaten nie in einen Testlauf.
-[ -f "$HERE/idfstub/secrets.h" ] || cat > "$HERE/idfstub/secrets.h" <<'SECRETS'
-#pragma once
-#define WIFI_SSID "test-ssid"
-#define WIFI_PASS "test-pass"
-SECRETS
 
 echo "== 1. Syntax-Check =="
 rc=0

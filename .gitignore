@@ -50,4 +50,3 @@ test/panel/*.png
 
 # Von test/native/run.sh erzeugt
 test/native/idfstub_impl.c
-test/native/idfstub/secrets.h

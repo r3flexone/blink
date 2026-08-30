@@ -11,7 +11,25 @@
 #include "display.h"
 #include "led.h"
 #include "button.h"
-#include "secrets.h"
+// secrets.h ist optional. Eingerichtet wird das Geraet ueber das Web-Panel:
+// ohne brauchbare Zugangsdaten geht es in den AP-Modus (SSID "SBB-Monitor",
+// 192.168.4.1), dort traegt man WLAN ein, und es landet in NVS. Der Include
+// war frueher hart — ein frischer Clone liess sich damit gar nicht bauen,
+// bevor man die gitignorete Datei von Hand angelegt hatte, fuer einen
+// Fallback, den im Normalbetrieb niemand benutzt.
+// Wer die Zugangsdaten trotzdem einkompilieren will, legt main/secrets.h an
+// (Vorlage: main/secrets.h.example).
+#if defined(__has_include)
+#  if __has_include("secrets.h")
+#    include "secrets.h"
+#  endif
+#endif
+#ifndef WIFI_SSID
+#define WIFI_SSID ""
+#endif
+#ifndef WIFI_PASS
+#define WIFI_PASS ""
+#endif
 #include "driver/gpio.h"
 #include "driver/rtc_io.h"
 #include "esp_chip_info.h"
@@ -64,7 +82,7 @@ static void go_to_sleep(uint64_t us) {
 }
 
 // ===== WIFI =====
-// NVS-Credentials, mit secrets.h als Compile-Time-Fallback
+// NVS-Credentials, mit dem optionalen secrets.h als Compile-Time-Fallback
 static void wifi_connect_from_cfg(void) {
     const char *ssid = cfg.ssid[0]     ? cfg.ssid     : WIFI_SSID;
     const char *pass = cfg.password[0] ? cfg.password : WIFI_PASS;
