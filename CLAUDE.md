@@ -29,12 +29,12 @@ On first flash or after partition table changes: `idf.py fullclean` before build
 There is no linter. Two test suites run without hardware and should both be green before claiming a change works:
 
 ```
-./test/native/run.sh                  # Firmware: Syntax, Link, Config-Tabelle
+./test/native/run.sh                  # Firmware: Build, Link und Regressionen
 node test/panel/panel.test.js         # Web-Panel (Playwright)
 node test/panel/roundtrip.test.js
 ```
 
-`test/native/run.sh` needs only `gcc` and `python3`. It syntax-checks every `main/*.c` against the stub headers in `test/native/idfstub/` with `-Wall -Wextra`, then **links the whole firmware natively** against generated stub implementations — that second step is what catches missing and duplicate symbols when code moves between translation units, which a per-file syntax check cannot see. It also runs `config_table.test.c` over `config_fields.def`. Details and limits in `test/native/README.md`.
+`test/native/run.sh` needs only `gcc` and `python3`. It syntax-checks every `main/*.c` against the stub headers in `test/native/idfstub/` with `-Wall -Wextra`, then **links the whole firmware natively** against generated stub implementations — that second step is what catches missing and duplicate symbols when code moves between translation units, which a per-file syntax check cannot see. It also runs configuration, departure selection, Origin validation, retry interruption and cache-key regression tests. The portable entry point is `python test/native/run.py`; `run.sh` delegates to it. Windows can use `--cc path/to/zig.exe cc`. Details and limits in `test/native/README.md`.
 
 Neither suite substitutes for a real `idf.py build` or a hardware test; say so explicitly when that's all that was run. If you use a new IDF function, add it to `test/native/idfstub/` — `gen_stubs.py` derives the empty implementation from the header itself.
 
@@ -102,8 +102,8 @@ The button (GPIO 0 by default) is both the deep-sleep wake source (`ESP_EXT1_WAK
 
 `while (!force_sleep && (run_forever || xTaskGetTickCount() < active_end))` — one iteration does:
 1. Reload `cfg` from NVS if `g_cfg_dirty` is set (after web panel save). Re-evaluates `run_forever`. If sleep was just re-enabled (`was_forever && !run_forever`), resets `active_end` to now + `buttonActiveMin`. Re-arms the invert timer, and un-inverts the display if `oledInvertMin` was just switched to 0.
-2. Retry-fetch departures (`cfg.apiRetryCount` attempts, `cfg.apiRetryDelayS` apart).
-3. If success → update in-RAM cache (`last_deps`, `cached_time`). If failure → show cached data with `!` prefix if `< cfg.staleMaxMin` minutes old.
+2. Retry-fetch departures (`cfg.apiRetryCount` attempts, `cfg.apiRetryDelayS` apart). Retry waits poll the button/config/deadline every 100 ms; reconnect waits check every second. An in-flight HTTP request retains its 10-second timeout.
+3. Station/filter changes invalidate both local and HTTP caches; unrelated settings retain them. If success → update in-RAM cache (`last_deps`, `cached_time`). If failure → show cached data with `!` prefix if `< cfg.staleMaxMin` minutes old.
 4. LED: **worst status across all valid, non-cancelled departures** (Ausfall > big delay > small delay > OK), scaled by `ledBrightness`.
 5. Render via `display_departures()` which in turn calls `draw_header()` (station name + clock).
 6. Draw countdown bar — full (100 %) when `run_forever`, counting down otherwise.
@@ -160,7 +160,7 @@ Signature: `bool sbb_get_departures(const char *station, SbbDeparture results[DE
 - **Count-based, not NULL-terminated.** `filter_count = 0` disables filtering entirely.
 - Station name is URL-encoded inside (space → `%20`), so callers pass the canonical name as it appears on sbb.ch (e.g. `"Basel SBB"`).
 - Filter matches both the end destination (`to`) and intermediate stops (`passList/station/name`), case-insensitive substring. The `passList` field is requested from the API **only when `filter_count > 0`** to save bandwidth. Empty filter strings are skipped — `str_contains_ci()` treats an empty needle as a match, so one blank entry would silently disable the whole filter.
-- Results are chosen to start at the first departure ≥ current HH:MM; if fewer than 4 future trains are available, the window backs up and some `results[i]` may have `valid = false`.
+- Results use full ISO departure timestamps (date and UTC offset) plus delay, sorted by expected departure. Only trains in the current minute or later are returned; unused slots stay invalid. `expectedDeparture` is also used for adaptive refresh, without a 12-hour heuristic.
 - Returns `false` (and logs the reason) on: WiFi down, transport error, **non-2xx HTTP status**, truncated response, unparseable JSON, missing/non-array `stationboard`, or no future train. The HTTP status check matters because `esp_http_client_perform()` returns `ESP_OK` for a 404 too — a misspelled station name would otherwise show up as "JSON Parse Fehler". Read the status code *before* `esp_http_client_cleanup()`.
 
 ### Web panel

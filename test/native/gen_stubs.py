@@ -35,7 +35,7 @@ NORETURN = {'esp_deep_sleep_start', 'esp_restart'}
 
 seen = set()
 for h in hdrs:
-    text = CMT.sub('', strip_attrs(open(h).read()))
+    text = CMT.sub('', strip_attrs(open(h, encoding="utf-8").read()))
     # Praeprozessor-Zeilen und Typedefs raus, dann an ';' in Statements zerlegen
     # Praeprozessor-Zeilen inklusive ihrer Backslash-Fortsetzungen entfernen —
     # sonst bleiben von mehrzeiligen Makros (IP2STR, HTTPD_DEFAULT_CONFIG) Reste
@@ -74,5 +74,5 @@ for h in hdrs:
 out += ['esp_event_base_t WIFI_EVENT = "wifi";',
         'esp_event_base_t IP_EVENT   = "ip";',
         '#ifndef STUB_NO_MAIN', 'int main(void) { return 0; }', '#endif']
-open(S + '/idfstub_impl.c', 'w').write('\n'.join(out) + '\n')
+open(S + '/idfstub_impl.c', 'w', encoding='utf-8').write('\n'.join(out) + '\n')
 print("Stub-Impl:", len(seen), "Funktionen")

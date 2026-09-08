@@ -165,7 +165,7 @@ Tabelle.
 Beide Suiten laufen ohne Hardware:
 
 ```
-./test/native/run.sh                  # Syntax, nativer Link, Config-Tabelle
+./test/native/run.sh                  # Nativer Build/Link und Regressionen
 node test/panel/panel.test.js         # Web-Panel
 node test/panel/roundtrip.test.js
 ```

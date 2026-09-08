@@ -91,6 +91,19 @@ int main(void) {
     check(strcmp(a.oledAddr, "0x3C") == 0, "unbrauchbare oledAddr nicht ersetzt");
     check(a.station[0] != '\0',            "leere Station nicht ersetzt");
 
+    // Grenzfall am oberen Ende und Adressen mit gueltigem Praefix.
+    a.delaySmallMin = 240; a.delayBigMin = 240;
+    snprintf(a.oledAddr, sizeof(a.oledAddr), "3Cx");
+    nvs_config_sanitize(&a);
+    check(a.delaySmallMin == 239 && a.delayBigMin == 240, "Schwellen bei 240 nicht getrennt");
+    check(strcmp(a.oledAddr, "0x3C") == 0, "OLED-Adresse mit Restzeichen akzeptiert");
+    memcpy(&b, &a, sizeof(a));
+    nvs_config_sanitize(&b);
+    check(memcmp(&a, &b, sizeof(a)) == 0, "Grenzfall nicht idempotent");
+    snprintf(a.oledAddr, sizeof(a.oledAddr), "0x3D");
+    nvs_config_sanitize(&a);
+    check(strcmp(a.oledAddr, "0x3D") == 0, "Gueltige OLED-Adresse veraendert");
+
     printf(fails ? "\n%d Pruefung(en) fehlgeschlagen.\n" : "\nAlle Pruefungen bestanden.\n", fails);
     return fails ? 1 : 0;
 }

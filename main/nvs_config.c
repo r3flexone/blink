@@ -54,16 +54,18 @@ void nvs_config_sanitize(blink_config_t *cfg) {
 
     // "stark verspätet" muss über "leicht verspätet" liegen, sonst ist eine
     // der beiden LED-Farben unerreichbar.
+    cfg->delaySmallMin = clampi(cfg->delaySmallMin, 1, 239);
     if (cfg->delayBigMin <= cfg->delaySmallMin)
-        cfg->delayBigMin = clampi(cfg->delaySmallMin + 1, 1, 240);
+        cfg->delayBigMin = cfg->delaySmallMin + 1;
 
     if (!cfg->station[0])
         snprintf(cfg->station, sizeof(cfg->station), "Gelterkinden");
 
     // Als 7-Bit-I2C-Adresse lesbar? Sonst zurücksetzen — sonst zeigte das
     // Panel eine Adresse, die main.c beim Start ohnehin verwirft.
-    long addr = strtol(cfg->oledAddr, NULL, 16);
-    if (addr < 0x08 || addr > 0x77)
+    char *end;
+    long addr = strtol(cfg->oledAddr, &end, 16);
+    if (end == cfg->oledAddr || *end != '\0' || addr < 0x08 || addr > 0x77)
         snprintf(cfg->oledAddr, sizeof(cfg->oledAddr), "0x3C");
 }
 

@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>
 
 // Anzahl Abfahrten, die geholt, angezeigt und im Panel gespiegelt werden.
 // Steckte frueher als nackte 4 in sbb.c, main.c und http_server.h.
@@ -12,6 +13,7 @@ typedef struct {
     char time[6];           // "HH:MM"
     char destination[32];   // Endziel, z.B. "Basel SBB"
     char platform[6];       // Gleis, z.B. "3" oder "" wenn unbekannt
+    time_t expectedDeparture; // Abfahrt inkl. Verspaetung, als UTC-Zeitstempel
     int  delay;             // Verspätung in Minuten (0 = pünktlich)
     bool cancelled;         // true = Zug fällt aus
     bool valid;             // true = Eintrag enthält Daten

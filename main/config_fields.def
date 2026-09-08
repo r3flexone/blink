@@ -94,7 +94,7 @@ CFG_INT (ledBrightness,    "ledBright",  "ledBrightness",       16, 1,   255)
 
 // ===== Verspaetungs-Schwellen =====
 // delayBigMin muss ueber delaySmallMin liegen — Querbezug, siehe sanitize().
-CFG_INT (delaySmallMin, "dlySmlMin", "delaySmallMin", 2, 1, 240)
+CFG_INT (delaySmallMin, "dlySmlMin", "delaySmallMin", 2, 1, 239)
 CFG_INT (delayBigMin,   "dlyBigMin", "delayBigMin",   6, 1, 240)
 
 // ===== Adaptiver Refresh =====

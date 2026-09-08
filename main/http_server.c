@@ -128,8 +128,11 @@ static bool content_type_is_json(httpd_req_t *req) {
 
 static bool origin_is_self(httpd_req_t *req) {
     char origin[128];
-    if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK)
-        return true;   // kein Origin = kein Browser-Cross-Site-Request
+    size_t len = httpd_req_get_hdr_value_len(req, "Origin");
+    if (len == 0) return true;   // Header fehlt (z.B. curl)
+    if (len >= sizeof(origin) ||
+        httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK)
+        return false;   // vorhanden, aber nicht vollstaendig pruefbar
     char host[64];
     if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK)
         return false;

@@ -219,14 +219,36 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 
 // ===== Zeit-Helpers =====
 
-static int time_to_minutes(const char *hhmm)
+// ISO-8601 mit explizitem Offset: unabhaengig von RTC-TZ und Sommerzeit.
+// Akzeptiert +0200, +02:00 und Z; ungueltige Kalenderdaten werden verworfen.
+static bool departure_timestamp(const char *iso, time_t *out)
 {
-    const char *t = strchr(hhmm, 'T');
-    int h = 0, m = 0;
-    int got = t ? sscanf(t + 1, "%d:%d", &h, &m)
-                : sscanf(hhmm, "%d:%d", &h, &m);
-    if (got != 2) return -1;
-    return h * 60 + m;
+    int y, mo, d, h, m, sec, used = 0;
+    if (sscanf(iso, "%4d-%2d-%2dT%2d:%2d:%2d%n", &y, &mo, &d, &h, &m, &sec, &used) != 6 ||
+        used != 19 || y < 1970 || y > 9999 || mo < 1 || mo > 12 ||
+        h < 0 || h > 23 || m < 0 || m > 59 || sec < 0 || sec > 59) return false;
+    static const int month_days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
+    bool leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    if (d < 1 || d > month_days[mo - 1] + (mo == 2 && leap)) return false;
+    const char *zone = iso + used;
+    int oh = 0, om = 0, offset = 0, n = 0;
+    if (strcmp(zone, "Z") != 0) {
+        if (*zone != '+' && *zone != '-') return false;
+        if (sscanf(zone + 1, "%2d:%2d%n", &oh, &om, &n) != 2 || n != 5) {
+            n = 0;
+            if (sscanf(zone + 1, "%2d%2d%n", &oh, &om, &n) != 2 || n != 4) return false;
+        }
+        if (zone[1 + n] || oh < 0 || oh > 23 || om < 0 || om > 59) return false;
+        offset = (oh * 60 + om) * (*zone == '-' ? -1 : 1);
+    }
+    // Gregorianische Tage seit 1970-01-01 (400-Jahres-Zyklen).
+    int year = y - (mo <= 2);
+    int era = year / 400;
+    int yoe = year - era * 400;
+    int doy = (153 * (mo + (mo > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    int days = era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468;
+    *out = (time_t)days * 86400 + h * 3600 + m * 60 + sec - offset * 60;
+    return true;
 }
 
 static void format_time(const char *iso, char out[6])
@@ -358,9 +380,10 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         return false;
     }
 
-    time_t now; struct tm timeinfo;
-    time(&now); localtime_r(&now, &timeinfo);
-    int target_min = timeinfo.tm_hour * 60 + timeinfo.tm_min;
+    time_t now;
+    time(&now);
+    // Anzeige ist minutengenau: Zuege dieser Minute noch einschliessen.
+    time_t current_minute = now - now % 60;
     int count = cJSON_GetArraySize(stationboard);
 
     typedef struct {
@@ -369,7 +392,7 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         char platform[6];
         int  delay;
         bool cancelled;
-        int  minutes;
+        time_t expected;
     } Entry;
 
     // static: spart ~1 KB Stack (sbb_get_departures wird nur sequentiell aufgerufen)
@@ -427,10 +450,13 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         if (!matches) continue;
 
         entries[n].cancelled = cancelled && cJSON_IsTrue(cancelled);
-        entries[n].minutes = time_to_minutes(departure->valuestring);
+        time_t scheduled;
+        if (!departure_timestamp(departure->valuestring, &scheduled)) continue;
         format_time(departure->valuestring, entries[n].time);
         // delay ist bei fehlenden Echtzeitdaten null — nur echte Zahlen nehmen
         entries[n].delay = cJSON_IsNumber(delay_json) ? delay_json->valueint : 0;
+        entries[n].expected = scheduled + (time_t)entries[n].delay * 60;
+        if (entries[n].expected < current_minute) continue;
 
         if (dest && dest->valuestring) {
             strncpy(entries[n].destination, dest->valuestring, 31);
@@ -457,27 +483,20 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         return false;
     }
 
-    // Wrap-fähiger Vergleich: ein Zug gilt als zukünftig, wenn er innerhalb
-    // der nächsten 12 h liegt (modulo Tag). Sonst würde um 23:50 ein
-    // 00:05-Zug als "vergangen" verworfen.
-    int target_idx = -1;
-    for (int i = 0; i < n; i++) {
-        if (entries[i].minutes < 0) continue;
-        int fwd = (entries[i].minutes - target_min + 24 * 60) % (24 * 60);
-        if (fwd <= 12 * 60) { target_idx = i; break; }
+    // Nach tatsaechlicher Abfahrt sortieren: Verspaetung kann die Reihenfolge
+    // aendern. Vergangene Zuege werden nicht zum Auffuellen zurueckgeholt.
+    for (int i = 1; i < n; i++) {
+        Entry entry = entries[i];
+        int j = i;
+        while (j > 0 && entries[j - 1].expected > entry.expected) {
+            entries[j] = entries[j - 1];
+            j--;
+        }
+        entries[j] = entry;
     }
-    if (target_idx < 0) {
-        set_error("Alle %d Zuege in der Vergangenheit (%02d:%02d)",
-                  n, target_min/60, target_min%60);
-        return false;
-    }
-
-    int start = target_idx;
-    if (start + DEP_COUNT > n) start = n - DEP_COUNT;
-    if (start < 0) start = 0;
 
     for (int i = 0; i < DEP_COUNT; i++) {
-        int idx = start + i;
+        int idx = i;
         if (idx < 0 || idx >= n) { results[i].valid = false; continue; }
         results[i].valid = true;
         strncpy(results[i].time, entries[idx].time, 5);
@@ -485,6 +504,7 @@ bool sbb_get_departures(const char *station, SbbDeparture results[DEP_COUNT],
         strncpy(results[i].platform, entries[idx].platform, 5);
         results[i].platform[5] = 0;
         results[i].delay = entries[idx].delay;
+        results[i].expectedDeparture = entries[idx].expected;
         results[i].cancelled = entries[idx].cancelled;
     }
     last_error[0] = 0;

@@ -89,22 +89,47 @@ static void wifi_connect_from_cfg(void) {
     sbb_wifi_init(ssid, pass);
 }
 
-// Reconnect anstossen und in 1-s-Scheiben darauf warten, dazwischen den Taster
-// pollen. Ein einzelner 15-s-Block in sbb_wifi_reconnect() liess das Geraet bei
-// WLAN-Problemen so lange nicht auf "Schlafen" reagieren.
-#define WIFI_RECONNECT_TIMEOUT_S 15
-static void wifi_reconnect_interruptible(bool *force_sleep) {
+// Gemeinsame Abbruchpunkte fuer Reconnect und API-Retry. Eine einzelne
+// HTTP-Anfrage bleibt durch ihren 10-s-Timeout begrenzt.
+static bool active_interrupted(bool run_forever, TickType_t active_end, bool *force_sleep) {
+    if (*force_sleep) return true;
+    if (button_pressed()) {
+        button_wait_release(5000);
+        *force_sleep = true;
+        return true;
+    }
+    return g_cfg_dirty || (!run_forever && (int32_t)(active_end - xTaskGetTickCount()) <= 0);
+}
+
+static bool active_wait(TickType_t duration, bool run_forever,
+                        TickType_t active_end, bool *force_sleep) {
+    TickType_t start = xTaskGetTickCount();
+    for (;;) {
+        if (active_interrupted(run_forever, active_end, force_sleep)) return false;
+        TickType_t elapsed = xTaskGetTickCount() - start;
+        if (elapsed >= duration) return true;
+        TickType_t left = duration - elapsed;
+        TickType_t step = pdMS_TO_TICKS(100);
+        vTaskDelay(left < step ? left : step);
+    }
+}
+
+static void wifi_reconnect_interruptible(bool run_forever, TickType_t active_end,
+                                         bool *force_sleep) {
     if (sbb_wifi_is_connected()) return;
     sbb_wifi_reconnect_start();
-    for (int i = 0; i < WIFI_RECONNECT_TIMEOUT_S; i++) {
+    for (int i = 0; i < 15; i++) {
+        if (active_interrupted(run_forever, active_end, force_sleep)) return;
         if (sbb_wifi_wait_connected(1000)) return;
-        if (button_pressed()) {
-            ESP_LOGI(TAG, "Button während Reconnect → Schlaf");
-            button_wait_release(5000);
-            *force_sleep = true;
-            return;
-        }
     }
+}
+
+// Nur Daten derselben Abfrage duerfen als Cache weiterverwendet werden.
+static bool departure_query_changed(const blink_config_t *a, const blink_config_t *b) {
+    if (strcmp(a->station, b->station) || a->destFilterCount != b->destFilterCount) return true;
+    for (int i = 0; i < a->destFilterCount; i++)
+        if (strcmp(a->destFilters[i], b->destFilters[i])) return true;
+    return false;
 }
 
 // ===== NTP =====
@@ -421,11 +446,21 @@ void app_main(void) {
     while (!force_sleep && (run_forever || xTaskGetTickCount() < active_end)) {
         if (g_cfg_dirty) {
             bool was_forever = run_forever;
-            esp_err_t load_err = nvs_config_load(&cfg);
+            static blink_config_t next_cfg;
+            // Vor dem Laden loeschen: ein Save waehrenddessen bleibt sichtbar.
             g_cfg_dirty = false;
+            esp_err_t load_err = nvs_config_load(&next_cfg);
             if (load_err != ESP_OK) {
                 ESP_LOGE(TAG, "Config Reload fehlgeschlagen: %s", esp_err_to_name(load_err));
             } else {
+                if (departure_query_changed(&cfg, &next_cfg)) {
+                    has_cached = false;
+                    cached_time = 0;
+                    memset(last_deps, 0, sizeof(last_deps));
+                    http_status_set_departures(last_deps, 0);
+                    display_message(next_cfg.station, "LADE ZUEGE...", NULL, NULL);
+                }
+                cfg = next_cfg;
                 ESP_LOGI(TAG, "Config neu geladen (Web-Panel)");
             }
             run_forever = !cfg.sleepEnabled && !woken_by_button;
@@ -451,16 +486,26 @@ void app_main(void) {
             check_window_overlaps();
         }
         publish_status(run_forever, active_end);
-        wifi_reconnect_interruptible(&force_sleep);
-        if (force_sleep) break;
+        wifi_reconnect_interruptible(run_forever, active_end, &force_sleep);
+        if (active_interrupted(run_forever, active_end, &force_sleep)) {
+            if (g_cfg_dirty && !force_sleep) continue;
+            break;
+        }
 
         bool success = false;
         for (int attempt = 0; attempt < cfg.apiRetryCount && !success; attempt++) {
             if (attempt > 0) {
                 ESP_LOGW(TAG, "API Retry %d/%d", attempt + 1, cfg.apiRetryCount);
-                vTaskDelay(seconds_to_ticks((uint32_t)cfg.apiRetryDelayS));
+                if (!active_wait(seconds_to_ticks((uint32_t)cfg.apiRetryDelayS),
+                                 run_forever, active_end, &force_sleep)) break;
             }
+            if (active_interrupted(run_forever, active_end, &force_sleep)) break;
             success = sbb_get_departures(cfg.station, deps, filter_ptrs, cfg.destFilterCount);
+        }
+        // Keine Antwort fuer eine inzwischen geaenderte Abfrage publizieren.
+        if (active_interrupted(run_forever, active_end, &force_sleep)) {
+            if (g_cfg_dirty && !force_sleep) continue;
+            break;
         }
 
         bool show_stale = false;
@@ -494,20 +539,16 @@ void app_main(void) {
         int refresh_sec;
         if (success) {
             int min_to_next = -1;
-            time_t n; struct tm nt; time(&n); localtime_r(&n, &nt);
-            int cur_m = nt.tm_hour * 60 + nt.tm_min;
+            time_t n; time(&n);
             for (int i = 0; i < DEP_COUNT; i++) {
                 if (!deps[i].valid || deps[i].cancelled) continue;
-                int h, m;
-                if (sscanf(deps[i].time, "%d:%d", &h, &m) == 2) {
-                    // Wrap-fähig: Zug nach Mitternacht zählt als zukünftig (≤ 12 h)
-                    int diff = ((h * 60 + m + deps[i].delay) - cur_m + 24 * 60) % (24 * 60);
-                    if (diff <= 12 * 60 && (min_to_next < 0 || diff < min_to_next))
-                        min_to_next = diff;
-                }
+                time_t delta = deps[i].expectedDeparture - (n - n % 60);
+                if (delta < 0) continue;
+                int diff = delta / 60 > 1440 ? 1441 : (int)(delta / 60);
+                if (min_to_next < 0 || diff < min_to_next) min_to_next = diff;
             }
             if (min_to_next < 0) {
-                ESP_LOGW(TAG, "Kein Zug in Zukunft! cur_m=%d", cur_m);
+                ESP_LOGW(TAG, "Kein Zug in Zukunft!");
                 refresh_sec = cfg.refreshFarSec;
             } else if (min_to_next <= cfg.refreshNearMin) refresh_sec = cfg.refreshNearSec;
             else if (min_to_next <= cfg.refreshMidMin)    refresh_sec = cfg.refreshMidSec;
